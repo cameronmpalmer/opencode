@@ -539,7 +539,7 @@ export function Titlebar(props: { update?: TitlebarUpdate }) {
               </Show>
               <div class="flex items-center gap-1 shrink-0">
                 <TooltipKeybind
-                  class={web() ? "hidden xl:flex shrink-0 ml-14" : "hidden xl:flex shrink-0 ml-2"}
+                    class="flex shrink-0 ml-2"
                   placement="bottom"
                   title={language.t("command.sidebar.toggle")}
                   keybind={command.keybind("sidebar.toggle")}

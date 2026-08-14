@@ -392,7 +392,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           const session = id()
           if (!session) return
           if (msg.sessionID !== session) return
-          if (saved.session[session] !== undefined) return
+          if (saved.session[session]?.model != null) return
           if (handoff.has(handoffKey(serverSDK().scope, sdk().directory, session))) return
 
           setSaved("session", session, {
