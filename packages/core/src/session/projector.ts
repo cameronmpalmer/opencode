@@ -12,7 +12,6 @@ import { SessionMessage } from "./message"
 import { SessionMessageUpdater } from "./message-updater"
 import { SessionInput } from "./input"
 import { WorkspaceV2 } from "../workspace"
-import { SessionContextEpoch } from "./context-epoch"
 import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, SessionTable } from "./sql"
 import type { DeepMutable } from "../schema"
 
@@ -208,7 +207,7 @@ function insertMessage(db: DatabaseService, event: SessionEvent.Event, message: 
     .pipe(Effect.orDie)
 }
 
-export const layer = Layer.effectDiscard(
+const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const events = yield* EventV2.Service
     const { db } = yield* Database.Service
@@ -253,7 +252,6 @@ export const layer = Layer.effectDiscard(
           .where(eq(SessionTable.id, event.data.sessionID))
           .run()
           .pipe(Effect.orDie)
-        yield* SessionContextEpoch.reset(db, event.data.sessionID)
       }),
     )
     yield* events.project(SessionV1.Event.Deleted, (event) =>
@@ -449,11 +447,9 @@ export const layer = Layer.effectDiscard(
           .where(eq(SessionTable.id, event.data.sessionID))
           .run()
           .pipe(Effect.orDie)
-        yield* SessionContextEpoch.reset(db, event.data.sessionID)
       }),
     )
   }),
 )
 
-export const defaultLayer = layer.pipe(Layer.provide(EventV2.defaultLayer), Layer.provide(Database.defaultLayer))
 export const node = makeGlobalNode({ name: "session-projector", layer, deps: [EventV2.node, Database.node] })

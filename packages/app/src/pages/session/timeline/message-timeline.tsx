@@ -40,7 +40,7 @@ import { DialogFooter, DialogHeader, DialogTitleGroup, DialogV2 } from "@opencod
 import { InlineInput } from "@opencode-ai/ui/inline-input"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { SessionRetry } from "@opencode-ai/session-ui/session-retry"
-import { ScrollView } from "@opencode-ai/ui/scroll-view"
+import { isScrollKeyTarget, scrollKey, scrollKeyOwner, ScrollView } from "@opencode-ai/ui/scroll-view"
 import { StickyAccordionHeader } from "@opencode-ai/ui/sticky-accordion-header"
 import { TextField } from "@opencode-ai/ui/text-field"
 import { TextReveal } from "@opencode-ai/ui/text-reveal"
@@ -53,6 +53,7 @@ import type {
   UserMessage,
 } from "@opencode-ai/sdk/v2"
 import { showToast } from "@/utils/toast"
+import { downloadSessionExport, fetchSessionExport, sessionExportFilename } from "@/utils/session-export"
 import { getDirectory, getFilename } from "@opencode-ai/core/util/path"
 import { Popover as KobaltePopover } from "@kobalte/core/popover"
 import { normalize } from "@opencode-ai/session-ui/session-diff"
@@ -72,6 +73,7 @@ import { useSync } from "@/context/sync"
 import { notifySessionTabsRemoved } from "@/components/titlebar-session-events"
 import { sessionTitle } from "@/utils/session-title"
 import { scheduleConnectedMeasure } from "./measure"
+import { observeElementOffsetReconnectAware } from "./observe-element-offset"
 import { createTimelineProjection } from "./projection"
 import { MessageComment, SummaryDiff, TimelineRow, TimelineRowMap } from "./rows"
 import { filterVirtualIndexes } from "./virtual-items"
@@ -160,8 +162,7 @@ function TimelineDiffSummaryRow(props: { diffs: SummaryDiff[] }) {
     >
       <div data-slot="session-turn-diffs-header">
         <span data-slot="session-turn-diffs-label">
-          {props.diffs.length} {language.t("ui.sessionTurn.diffs.changed")}{" "}
-          {language.t(props.diffs.length === 1 ? "ui.common.file.one" : "ui.common.file.other")}
+          {language.plural("ui.sessionTurn.diffs.changed", props.diffs.length)}
         </span>
         <DiffChanges changes={props.diffs} />
         <Show when={overflow() > 0}>
@@ -280,6 +281,16 @@ export function MessageTimeline(props: {
     return sync().data.session_status[id] ?? idle
   })
   const sessionMessages = createMemo(() => (sessionID() ? (sync().data.message[sessionID()!] ?? []) : []))
+  const projectedMessages = createMemo(() => {
+    const id = sessionID()
+    if (!id) return []
+    const visible = new Set(props.userMessages.map((message) => message.id))
+    const boundary = sessionMessages().find((message) => message.role === "user" && !visible.has(message.id))?.id
+    const messages = sync().data.session_message[id] ?? []
+    if (!boundary) return messages
+    const index = messages.findIndex((message) => message.id === boundary)
+    return index < 0 ? messages : messages.slice(0, index)
+  })
   const info = createMemo(() => {
     const id = sessionID()
     if (!id) return
@@ -322,9 +333,11 @@ export function MessageTimeline(props: {
   const projection = createTimelineProjection({
     messages: sessionMessages,
     userMessages: () => props.userMessages,
+    sessionMessages: projectedMessages,
     parts: getMsgParts,
     status: sessionStatus,
     showReasoningSummaries: settings.general.showReasoningSummaries,
+    inlineComments: settings.general.newLayoutDesigns,
   })
   const activeMessageID = projection.activeMessageID
   const assistantMessagesByParent = projection.assistantMessagesByParent
@@ -405,6 +418,7 @@ export function MessageTimeline(props: {
       return timelineRows().length
     },
     getScrollElement: () => listRoot() ?? null,
+    observeElementOffset: observeElementOffsetReconnectAware,
     initialOffset: () => (props.shouldAnchorBottom() ? Number.MAX_SAFE_INTEGER : 0),
     initialMeasurementsCache: initialMeasurements,
     estimateSize: () => timelineFallbackItemSize,
@@ -441,6 +455,16 @@ export function MessageTimeline(props: {
     },
   })
   const resizeItem = virtualizer.resizeItem
+  let resizeAnchorScheduled = false
+  const anchorResizedBottom = () => {
+    if (resizeAnchorScheduled || props.hasScrollGesture()) return
+    resizeAnchorScheduled = true
+    queueMicrotask(() => {
+      resizeAnchorScheduled = false
+      if (!props.shouldAnchorBottom() || props.hasScrollGesture()) return
+      virtualizer.scrollToEnd()
+    })
+  }
   virtualizer.resizeItem = (index, size) => {
     const item = virtualizer.measurementsCache[index]
     const previous = item ? (virtualizer.itemSizeCache.get(item.key) ?? item.size) : undefined
@@ -462,9 +486,13 @@ export function MessageTimeline(props: {
       })
     }
     resizeItem(index, size)
+    if (root && props.shouldAnchorBottom()) anchorResizedBottom()
   }
-  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) =>
-    item.end <= instance.getLogicalScrollOffset()
+  virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item) => {
+    if (props.shouldAnchorBottom()) return false
+    const first = virtualizer.range?.startIndex
+    return first !== undefined && item.index < first
+  }
   const virtualItemByKey = createMemo(
     () => new Map(virtualizer.getVirtualItems().map((item) => [item.key, item] as const)),
   )
@@ -491,24 +519,13 @@ export function MessageTimeline(props: {
     })
   })
 
-  let bottomAnchorSessionKey = ""
-  let bottomAnchorFrame: number | undefined
-
   const maybeAnchorBottom = () => {
-    const key = sessionKey()
-    if (bottomAnchorSessionKey === key) return
     if (timelineRows().length === 0) return
-    bottomAnchorSessionKey = key
-    if (!props.shouldAnchorBottom()) return
-    if (bottomAnchorFrame !== undefined) cancelAnimationFrame(bottomAnchorFrame)
+    if (!props.shouldAnchorBottom() || props.hasScrollGesture()) return
     if (resizePinFrame !== undefined) cancelAnimationFrame(resizePinFrame)
     clearPrependAnchor()
     if (prependAnchorFrame !== undefined) cancelAnimationFrame(prependAnchorFrame)
-    bottomAnchorFrame = requestAnimationFrame(() => {
-      bottomAnchorFrame = undefined
-      if (sessionKey() !== key) return
-      virtualizer.scrollToEnd()
-    })
+    virtualizer.scrollToEnd()
   }
 
   let measuredSessionKey = sessionKey()
@@ -527,7 +544,6 @@ export function MessageTimeline(props: {
     timelineCache.delete(ownerSessionKey)
     timelineCache.set(ownerSessionKey, { measurements: virtualizer.takeSnapshot(), toolOpen: { ...toolOpen } })
     while (timelineCache.size > 16) timelineCache.delete(timelineCache.keys().next().value!)
-    if (bottomAnchorFrame !== undefined) cancelAnimationFrame(bottomAnchorFrame)
     if (resizePinFrame !== undefined) cancelAnimationFrame(resizePinFrame)
     if (overscanFrame !== undefined) cancelAnimationFrame(overscanFrame)
     props.setRevealMessage?.(() => {})
@@ -596,7 +612,20 @@ export function MessageTimeline(props: {
 
   const handleListPointerDown = (event: PointerEvent & { currentTarget: HTMLDivElement }) => {
     if (!prependLoading) clearPrependAnchor()
-    if (event.target !== event.currentTarget) return
+    props.onMarkScrollGesture(event.target)
+  }
+
+  const handleListPointerMove = (event: PointerEvent) => {
+    if (event.buttons !== 1) return
+    props.onMarkScrollGesture(event.target)
+  }
+
+  const handleListKeyDown = (event: KeyboardEvent & { currentTarget: HTMLDivElement }) => {
+    const key = scrollKey(event)
+    if (!key) return
+    if (!isScrollKeyTarget(event.target, key)) return
+    if (scrollKeyOwner(event.currentTarget, event.target, key) !== event.currentTarget) return
+    if (!prependLoading) clearPrependAnchor()
     props.onMarkScrollGesture(event.currentTarget)
   }
 
@@ -617,7 +646,7 @@ export function MessageTimeline(props: {
   const viewShare = () => {
     const url = shareUrl()
     if (!url) return
-    platform.openLink(url)
+    platform.openExternal(url)
   }
 
   const errorMessage = (err: unknown) => {
@@ -645,7 +674,7 @@ export function MessageTimeline(props: {
 
   const titleMutation = useMutation(() => ({
     mutationFn: (input: { id: string; title: string }) =>
-      sdk().client.session.update({ sessionID: input.id, title: input.title }),
+      sdk().api.session.rename({ sessionID: input.id, title: input.title }),
     onSuccess: (_, input) => {
       sync().set(
         produce((draft) => {
@@ -736,8 +765,9 @@ export function MessageTimeline(props: {
     if (!sessionID() || parentID()) return
     setTitle({ editing: true, draft: titleLabel() ?? "" })
     requestAnimationFrame(() => {
-      titleRef?.focus()
-      titleRef?.select()
+      if (!titleRef) return
+      titleRef.focus()
+      titleRef.select()
     })
   }
 
@@ -779,16 +809,40 @@ export function MessageTimeline(props: {
     navigate(`/${params.dir}/session`)
   }
 
+  const exportSession = async (sessionID: string) => {
+    try {
+      const data = await fetchSessionExport({
+        sessionID,
+        client: sdk().client,
+      })
+      const filename = sessionExportFilename(data.info)
+      downloadSessionExport(filename, data)
+      showToast({
+        variant: "success",
+        icon: "circle-check",
+        title: language.t("toast.session.export.success.title"),
+        description: language.t("toast.session.export.success.description", { filename }),
+      })
+    } catch (err) {
+      showToast({
+        variant: "error",
+        title: language.t("toast.session.export.failed.title"),
+        description: err instanceof Error ? err.message : language.t("toast.session.export.failed.description"),
+      })
+    }
+  }
+
   const archiveSession = async (sessionID: string) => {
     const session = sync().session.get(sessionID)
     if (!session) return
+    if ((await sdk().protocol) !== "v1") return
 
     const sessions = sync().data.session ?? []
     const index = sessions.findIndex((s) => s.id === sessionID)
     const nextSession = index === -1 ? undefined : (sessions[index + 1] ?? sessions[index - 1])
 
     await sdk()
-      .client.session.update({ sessionID, time: { archived: Date.now() } })
+      .client.session.update({ sessionID, directory: sdk().directory, time: { archived: Date.now() } })
       .then(() => {
         sync().set(
           produce((draft) => {
@@ -817,8 +871,8 @@ export function MessageTimeline(props: {
     const nextSession = index === -1 ? undefined : (sessions[index + 1] ?? sessions[index - 1])
 
     const result = await sdk()
-      .client.session.delete({ sessionID })
-      .then((x) => x.data)
+      .api.session.remove({ sessionID })
+      .then(() => true)
       .catch((err) => {
         showToast({
           title: language.t("session.delete.failed.title"),
@@ -975,10 +1029,16 @@ export function MessageTimeline(props: {
           .map((ref) => getMsgPart(ref.messageID, ref.partID))
           .filter((part): part is ToolPart => part?.type === "tool")
       })
+      const contextOpenKey = () => `context:${row().group.key}`
+      const open = createMemo(() => {
+        return toolOpen[contextOpenKey()] === true
+      })
 
       return (
         <ContextToolGroup
           parts={parts()}
+          open={open()}
+          onOpenChange={(value) => setToolOpen(contextOpenKey(), value)}
           busy={
             workingTurn(row().userMessageID) && lastAssistantGroupKey().get(row().userMessageID) === row().group.key
           }
@@ -1069,7 +1129,7 @@ export function MessageTimeline(props: {
         return (
           <TimelineRowFrame row={commentStripRow}>
             <div class="w-full px-4 md:px-5 pb-2">
-              <div class="ml-auto max-w-[82%] overflow-x-auto no-scrollbar">
+              <div class="ms-auto max-w-[82%] overflow-x-auto no-scrollbar">
                 <div class="flex w-max min-w-full justify-end gap-2">
                   <Index each={comments()}>
                     {(comment) => (
@@ -1111,6 +1171,10 @@ export function MessageTimeline(props: {
           const m = messageByID().get(userMessageRow().userMessageID)
           if (m?.role === "user") return m
         })
+        const messageComments = createMemo(() => {
+          if (!settings.general.newLayoutDesigns()) return []
+          return getMsgParts(userMessageRow().userMessageID).flatMap((part) => MessageComment.fromPart(part) ?? [])
+        })
         return (
           <TimelineRowFrame row={userMessageRow}>
             <Show when={message()}>
@@ -1122,6 +1186,7 @@ export function MessageTimeline(props: {
                       parts={getMsgParts(userMessageRow().userMessageID)}
                       actions={props.actions}
                       useV2Actions={settings.general.newLayoutDesigns()}
+                      comments={messageComments()}
                     />
                   </div>
                 </div>
@@ -1219,12 +1284,13 @@ export function MessageTimeline(props: {
     const initialRow = timelineRowByKey().get(props.rowKey)!
     const item = createMemo(() => virtualItemByKey().get(props.rowKey) ?? initialItem)
     const row = createMemo(() => timelineRowByKey().get(props.rowKey) ?? initialRow)
-    const asyncFile = () => {
+    const tool = () => {
       const value = row()
-      if (value._tag !== "AssistantPart" || value.group.type !== "part") return false
+      if (value._tag !== "AssistantPart" || value.group.type !== "part") return
       const part = getMsgPart(value.group.ref.messageID, value.group.ref.partID)
-      return part?.type === "tool" && ["edit", "write", "apply_patch"].includes(part.tool)
+      if (part?.type === "tool") return part
     }
+    const asyncFile = () => ["edit", "write", "apply_patch"].includes(tool()?.tool ?? "")
     const [ready, setReady] = createSignal(initialItem.size <= timelineFallbackItemSize || !asyncFile())
     let contentMeasureFrame: number | undefined
 
@@ -1254,6 +1320,8 @@ export function MessageTimeline(props: {
           width: "100%",
           height: `${item().size}px`,
           overflow: "clip",
+          // Rounded virtual measurements can otherwise clip a framed row's outer paint.
+          "overflow-clip-margin": row()._tag === "TurnGap" ? undefined : "0.5px",
         }}
       >
         <div
@@ -1338,6 +1406,8 @@ export function MessageTimeline(props: {
         onTouchEnd={handleListTouchEnd}
         onTouchCancel={handleListTouchEnd}
         onPointerDown={handleListPointerDown}
+        onPointerMove={handleListPointerMove}
+        onKeyDown={handleListKeyDown}
         onScroll={handleListScroll}
         onClick={props.onAutoScrollInteraction}
         class="relative min-w-0 w-full h-full"
@@ -1357,7 +1427,7 @@ export function MessageTimeline(props: {
               "w-full": true,
               "pb-4": true,
               "pr-3": true,
-              "pl-4": settings.general.newLayoutDesigns(),
+              "pl-2.5": settings.general.newLayoutDesigns(),
               "pl-2 md:pl-4": !settings.general.newLayoutDesigns(),
               "md:max-w-200 md:mx-auto 2xl:max-w-[1000px]": props.centered && !settings.general.newLayoutDesigns(),
             }}
@@ -1369,19 +1439,19 @@ export function MessageTimeline(props: {
                   "pr-3": !settings.general.newLayoutDesigns(),
                 }}
               >
-                <div class="flex items-center min-w-0 grow-1">
+                <div class="flex items-center min-w-0 flex-1 w-full">
                   <Show when={parentID()}>
                     <button
                       type="button"
                       data-slot="session-title-parent"
-                      class="min-w-0 max-w-[40%] truncate text-14-medium text-text-weak transition-colors hover:text-text-base"
+                      class="min-w-0 max-w-[40%] truncate pl-2 text-[13px] font-[530] leading-4 tracking-[-0.04px] text-v2-text-text-faint transition-colors hover:text-v2-text-text-muted"
                       onClick={navigateParent}
                     >
                       {parentTitle()}
                     </button>
                     <span
                       data-slot="session-title-separator"
-                      class="px-2 text-14-medium text-text-weak"
+                      class="-translate-y-[0.5px] pl-2 pr-1 text-[11px] font-medium text-v2-text-text-faint"
                       aria-hidden="true"
                     >
                       /
@@ -1393,8 +1463,13 @@ export function MessageTimeline(props: {
                       fallback={
                         <h1
                           data-slot="session-title-child"
-                          class="text-14-medium text-text-strong truncate grow-1 min-w-0"
-                          onDblClick={openTitleEditor}
+                          classList={{
+                            "truncate text-[13px] font-[530] leading-4 tracking-[-0.04px] text-v2-text-text-base": true,
+                            "w-fit rounded-[6px] px-2 py-1 hover:bg-v2-overlay-simple-overlay-hover":
+                              settings.general.newLayoutDesigns(),
+                            "grow-1 min-w-0": !settings.general.newLayoutDesigns(),
+                          }}
+                          onClick={openTitleEditor}
                         >
                           {childTitle()}
                         </h1>
@@ -1408,10 +1483,10 @@ export function MessageTimeline(props: {
                         value={title.draft}
                         disabled={titleMutation.isPending}
                         classList={{
-                          "text-14-medium text-text-strong grow-1 min-w-0 pl-1 -ml-1": true,
-                          "h-6 leading-4 rounded-[3px] focus:shadow-none focus:outline focus:outline-1 focus:outline-offset-[-1px] focus:outline-v2-border-border-focus":
+                          "block text-[13px] font-[530] leading-4 tracking-[-0.04px] text-v2-text-text-base": true,
+                          "w-full flex-1 grow-1 min-w-0 pl-1 -ml-1 rounded-[6px]": !settings.general.newLayoutDesigns(),
+                          "field-sizing-content self-start rounded-[6px] px-2 py-1 ":
                             settings.general.newLayoutDesigns(),
-                          "rounded-[6px]": !settings.general.newLayoutDesigns(),
                         }}
                         style={{
                           "--inline-input-shadow": settings.general.newLayoutDesigns()
@@ -1515,6 +1590,9 @@ export function MessageTimeline(props: {
                                     </DropdownMenu.ItemLabel>
                                   </DropdownMenu.Item>
                                 </Show>
+                                <DropdownMenu.Item onSelect={() => exportSession(id)}>
+                                  <DropdownMenu.ItemLabel>{language.t("common.export")}</DropdownMenu.ItemLabel>
+                                </DropdownMenu.Item>
                                 <DropdownMenu.Item onSelect={() => void archiveSession(id)}>
                                   <DropdownMenu.ItemLabel>{language.t("common.archive")}</DropdownMenu.ItemLabel>
                                 </DropdownMenu.Item>
@@ -1586,6 +1664,9 @@ export function MessageTimeline(props: {
                                   {language.t("session.share.action.share")}...
                                 </MenuV2.Item>
                               </Show>
+                              <MenuV2.Item onSelect={() => exportSession(id)}>
+                                {language.t("common.export")}...
+                              </MenuV2.Item>
                               <MenuV2.Item onSelect={() => void archiveSession(id)}>
                                 {language.t("common.archive")}
                               </MenuV2.Item>
