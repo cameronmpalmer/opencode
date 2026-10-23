@@ -209,6 +209,25 @@ const providerErrorLLM = Layer.succeed(
 const providerErrorEnv = LayerNode.compile(root, [...replacements, [LLM.node, providerErrorLLM]])
 const itProviderError = testEffect(providerErrorEnv)
 
+const finishUsageLLM = Layer.succeed(
+  LLM.Service,
+  LLM.Service.of({
+    stream: () =>
+      Stream.make(
+        LLMEvent.stepStart({ index: 0 }),
+        LLMEvent.textStart({ id: "text-1" }),
+        LLMEvent.textDelta({ id: "text-1", text: "hello" }),
+        LLMEvent.textEnd({ id: "text-1" }),
+        LLMEvent.finish({
+          reason: "stop",
+          usage: { inputTokens: 5, outputTokens: 7 },
+        }),
+      ),
+  }),
+)
+const finishUsageEnv = LayerNode.compile(root, [...replacements, [LLM.node, finishUsageLLM]])
+const itFinishUsage = testEffect(finishUsageEnv)
+
 const fragmentFailureLLM = Layer.succeed(
   LLM.Service,
   LLM.Service.of({
@@ -282,6 +301,99 @@ it.live("session.processor effect tests capture llm input cleanly", () =>
         expect(parts.some((part) => part.type === "text" && part.text === "hello")).toBe(true)
       }),
     { config: (url) => providerCfg(url) },
+  ),
+)
+
+it.live("session.processor records usage delivered on the finish event", () =>
+  provideTmpdirServer(
+    ({ dir, llm }) =>
+      Effect.gen(function* () {
+        const { processors, session, provider } = yield* boot()
+
+        yield* llm.text("hello", { usage: { input: 5, output: 7 } })
+
+        const chat = yield* session.create({})
+        const parent = yield* user(chat.id, "hi")
+        const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+        const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+        const handle = yield* processors.create({
+          assistantMessage: msg,
+          sessionID: chat.id,
+          model: mdl,
+        })
+
+        const value = yield* handle.process({
+          user: {
+            id: parent.id,
+            sessionID: chat.id,
+            role: "user",
+            time: parent.time,
+            agent: parent.agent,
+            model: { providerID: ref.providerID, modelID: ref.modelID },
+          } satisfies SessionV1.User,
+          sessionID: chat.id,
+          model: mdl,
+          agent: agent(),
+          system: [],
+          messages: [{ role: "user", content: "hi" }],
+          tools: {},
+        } satisfies LLM.StreamInput)
+
+        const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+        expect(value).toBe("continue")
+        expect(stored.info.role).toBe("assistant")
+        if (stored.info.role === "assistant") {
+          expect(stored.info.tokens.input).toBe(5)
+          expect(stored.info.tokens.output).toBe(7)
+        }
+      }),
+    { config: (url) => providerCfg(url) },
+  ),
+)
+
+itFinishUsage.live("session.processor records usage from a finish-only stream", () =>
+  provideTmpdirInstance((dir) =>
+    Effect.gen(function* () {
+      const { processors, session, provider } = yield* boot()
+
+      const chat = yield* session.create({})
+      const parent = yield* user(chat.id, "hi")
+      const msg = yield* assistant(chat.id, parent.id, path.resolve(dir))
+      const mdl = yield* provider.getModel(ref.providerID, ref.modelID)
+      const handle = yield* processors.create({
+        assistantMessage: msg,
+        sessionID: chat.id,
+        model: mdl,
+      })
+
+      const value = yield* handle.process({
+        user: {
+          id: parent.id,
+          sessionID: chat.id,
+          role: "user",
+          time: parent.time,
+          agent: parent.agent,
+          model: { providerID: ref.providerID, modelID: ref.modelID },
+        } satisfies SessionV1.User,
+        sessionID: chat.id,
+        model: mdl,
+        agent: agent(),
+        system: [],
+        messages: [{ role: "user", content: "hi" }],
+        tools: {},
+      } satisfies LLM.StreamInput)
+
+      const stored = yield* MessageV2.get({ sessionID: chat.id, messageID: msg.id })
+
+      expect(value).toBe("continue")
+      expect(stored.info.role).toBe("assistant")
+      if (stored.info.role === "assistant") {
+        expect(stored.info.tokens.input).toBe(5)
+        expect(stored.info.tokens.output).toBe(7)
+      }
+    }),
+    { config: cfg },
   ),
 )
 

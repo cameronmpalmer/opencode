@@ -531,8 +531,31 @@ const layer = Layer.effect(
             ctx.currentText = undefined
             return
 
-          case "finish":
+          case "finish": {
+            // Some OpenAI-compatible providers report usage only on the final
+            // finish event, not on a step-finish event. Apply it when no step
+            // usage was recorded so message and session totals stay accurate.
+            const tokens = ctx.assistantMessage.tokens
+            const reported =
+              (tokens.total ?? 0) !== 0 ||
+              tokens.input !== 0 ||
+              tokens.output !== 0 ||
+              tokens.reasoning !== 0 ||
+              tokens.cache.read !== 0 ||
+              tokens.cache.write !== 0
+            if (!reported && ctx.assistantMessage.cost === 0) {
+              const usage = Session.getUsage({
+                model: ctx.model,
+                usage: value.usage ?? new Usage({}),
+                metadata: value.providerMetadata,
+              })
+              ctx.assistantMessage.finish = value.reason
+              ctx.assistantMessage.cost = usage.cost
+              ctx.assistantMessage.tokens = usage.tokens
+              yield* session.updateMessage(ctx.assistantMessage)
+            }
             return
+          }
         }
       })
 
