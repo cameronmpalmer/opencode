@@ -1,5 +1,6 @@
 import type { Event, Session, SessionV2Info, V2SessionListResponse } from "@opencode-ai/sdk/v2/client"
 import type { QueryClient } from "@tanstack/solid-query"
+import type { FamilyArchiveFields } from "@/utils/session"
 import { trimSessions } from "./session-trim"
 import { pathKey } from "@/utils/path-key"
 
@@ -154,7 +155,8 @@ export function applyHomeSessionEvent(sessions: Session[], event: HomeSessionEve
   return sessions.with(index, info)
 }
 
-function toLegacySummary(session: SessionV2Info): Session {
+function toLegacySummary(session: SessionV2Info): Session & FamilyArchiveFields {
+  const family = session as SessionV2Info & FamilyArchiveFields
   return {
     id: session.id,
     slug: session.id,
@@ -170,5 +172,10 @@ function toLegacySummary(session: SessionV2Info): Session {
     model: session.model,
     version: "",
     time: session.time,
+    familyArchiveID: family.familyArchiveID,
+    archiveCause: family.archiveCause,
+    archiveState: family.archiveState,
+    archiveStateAt: family.archiveStateAt,
+    familyMemberCount: family.familyMemberCount,
   }
 }

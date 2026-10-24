@@ -22731,6 +22731,10 @@
               }
             ]
           },
+          "familyMemberCount": {
+            "type": "integer",
+            "minimum": 0
+          },
           "project": {
             "anyOf": [
               {

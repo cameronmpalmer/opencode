@@ -969,6 +969,12 @@ export default function LegacyLayout(props: ParentProps) {
         onSelect: () => openServer(),
       },
       {
+        id: "archived.open",
+        title: "Archived sessions",
+        category: language.t("command.category.session"),
+        onSelect: () => navigateWithSidebarReset("/archived"),
+      },
+      {
         id: "settings.open",
         title: language.t("command.settings.open"),
         category: language.t("command.category.settings"),
@@ -2343,6 +2349,8 @@ export default function LegacyLayout(props: ParentProps) {
       openProjectKeybind={() => command.keybind("project.open")}
       onOpenProject={chooseProject}
       renderProjectOverlay={projectOverlay}
+      archivedLabel={() => "Archived sessions"}
+      onOpenArchived={() => navigateWithSidebarReset("/archived")}
       settingsLabel={() => language.t("sidebar.settings")}
       settingsKeybind={() => command.keybind("settings.open")}
       onOpenSettings={openSettings}

@@ -2251,6 +2251,7 @@ export type GlobalSession = {
   archiveCause?: "user" | "cascade" | "migration" | null
   archiveState?: "archiving" | null
   archiveStateAt?: number | null
+  familyMemberCount?: number
   project: ProjectSummary | null
 }
 

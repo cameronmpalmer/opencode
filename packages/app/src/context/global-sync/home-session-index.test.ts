@@ -101,6 +101,28 @@ describe("Home V2 session index", () => {
     ])
   })
 
+  test("preserves the archive family fields on legacy summaries", () => {
+    const result = parseHomeSessionIndex([
+      {
+        ...session({ id: "family", updated: 30 }),
+        familyArchiveID: "root",
+        archiveCause: "cascade",
+        archiveState: "archiving",
+        archiveStateAt: 123,
+        familyMemberCount: 4,
+      } as unknown as SessionV2Info,
+    ])
+
+    expect(result[0]).toMatchObject({
+      id: "family",
+      familyArchiveID: "root",
+      archiveCause: "cascade",
+      archiveState: "archiving",
+      archiveStateAt: 123,
+      familyMemberCount: 4,
+    })
+  })
+
   test("preserves the per-directory Home retention limit", () => {
     const now = 10 * 60 * 60 * 1000
     const sessions = Array.from({ length: 80 }, (_, index) => ({
