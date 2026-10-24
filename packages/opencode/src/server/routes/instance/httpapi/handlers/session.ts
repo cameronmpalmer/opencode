@@ -6,6 +6,7 @@ import { Command } from "@/command"
 import { Permission } from "@/permission"
 import { SessionShare } from "@/share/session"
 import { Session } from "@/session/session"
+import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { SessionCompaction } from "@/session/compaction"
 import { MessageV2 } from "@/session/message-v2"
@@ -61,6 +62,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const execution = yield* SessionExecution.Service
     const scope = yield* Scope.Scope
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
@@ -209,7 +211,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
           yield* SessionError.mapArchiveErrors(session.unarchiveSubtree({ sessionID: ctx.params.sessionID }))
         } else {
           yield* SessionError.mapArchiveErrors(
-            session.archiveSubtree({ sessionID: ctx.params.sessionID, archivedAt: requested }),
+            session.archiveSubtree({
+              sessionID: ctx.params.sessionID,
+              archivedAt: requested,
+              interrupt: (sessionID) => execution.interrupt(sessionID),
+            }),
           )
         }
       } else if (requested !== undefined) {
@@ -240,7 +246,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const archive = Effect.fn("SessionHttpApi.archive")(function* (ctx: { params: { sessionID: SessionID } }) {
       yield* requireFamilyArchive()
       yield* requireSession(ctx.params.sessionID)
-      return yield* SessionError.mapArchiveErrors(session.archiveSubtree({ sessionID: ctx.params.sessionID }))
+      return yield* SessionError.mapArchiveErrors(
+        session.archiveSubtree({
+          sessionID: ctx.params.sessionID,
+          interrupt: (sessionID) => execution.interrupt(sessionID),
+        }),
+      )
     })
 
     const unarchive = Effect.fn("SessionHttpApi.unarchive")(function* (ctx: { params: { sessionID: SessionID } }) {

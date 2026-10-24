@@ -12,7 +12,6 @@ import { Database } from "@opencode-ai/core/database/database"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV2 } from "@opencode-ai/core/session"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
-import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { locationServiceMapLayer } from "@opencode-ai/core/location-services"
 
 import { NotFoundError } from "@/storage/storage"
@@ -535,6 +534,7 @@ export interface Interface {
     sessionID: SessionID
     archivedAt?: number
     waitTimeoutMs?: number
+    interrupt?: (sessionID: SessionID) => Effect.Effect<void>
   }) => Effect.Effect<ArchiveResult, FamilyError | NotFound>
   readonly unarchiveSubtree: (input: { sessionID: SessionID }) => Effect.Effect<UnarchiveResult, FamilyError | NotFound>
   readonly setMetadata: (input: typeof SetMetadataInput.Type) => Effect.Effect<void>
@@ -1069,6 +1069,7 @@ const layer: Layer.Layer<
       sessionID: SessionID
       archivedAt?: number
       waitTimeoutMs?: number
+      interrupt?: (sessionID: SessionID) => Effect.Effect<void>
     }) {
       const now = Date.now()
 
@@ -1167,9 +1168,11 @@ const layer: Layer.Layer<
       }
 
       const subtree = step1.rows.map((row) => row.id as SessionID)
-      const cancelled = step1.leases.map((lease) => lease.session_id)
+      const localActive = new Set<string>([...((yield* status.list()).keys() as Iterable<string>)])
+      const localCancelled = subtree.filter((sessionID) => localActive.has(sessionID))
+      const cancelled = [...new Set<SessionID>([...step1.leases.map((lease) => lease.session_id), ...localCancelled])]
 
-      if (step1.leases.length > 0) {
+      if (step1.leases.length > 0 || localCancelled.length > 0) {
         yield* db
           .update(SessionRunLeaseTable)
           .set({ cancel_requested: 1 })
@@ -1181,66 +1184,68 @@ const layer: Layer.Layer<
           )
           .run()
           .pipe(Effect.orDie)
-        const execution = yield* Effect.serviceOption(SessionExecution.Service)
-        if (execution._tag === "Some") {
+        if (input.interrupt) {
+          const interrupt = input.interrupt
           yield* Effect.forEach(
             subtree,
-            (sessionID) => execution.value.interrupt(sessionID).pipe(Effect.catchCause(() => Effect.void)),
+            (sessionID) => interrupt(sessionID).pipe(Effect.catchCause(() => Effect.void)),
             { concurrency: "unbounded", discard: true },
           )
         }
 
-        const timeout = input.waitTimeoutMs ?? 30_000
-        const deadline = Date.now() + timeout
-        let remaining = yield* liveLeases(db as unknown as Tx, subtree)
-        while (remaining.length > 0 && Date.now() < deadline) {
-          yield* Effect.sleep("25 millis")
-          remaining = yield* liveLeases(db as unknown as Tx, subtree)
-        }
+        if (step1.leases.length > 0) {
+          const timeout = input.waitTimeoutMs ?? 30_000
+          const deadline = Date.now() + timeout
+          let remaining = yield* liveLeases(db as unknown as Tx, subtree)
+          while (remaining.length > 0 && Date.now() < deadline) {
+            yield* Effect.sleep("25 millis")
+            remaining = yield* liveLeases(db as unknown as Tx, subtree)
+          }
 
-        if (remaining.length > 0) {
-          const blocking = remaining.map((lease) => lease.session_id as SessionID)
-          yield* asFamilyError(
-            db.transaction(
-              (tx) =>
-                Effect.gen(function* () {
-                  const marked = step1.rows
-                  if (marked.length > 0) {
-                    yield* tx
-                      .update(SessionTable)
-                      .set({ archive_state: null, archive_state_at: null })
-                      .where(
-                        inArray(
-                          SessionTable.id,
-                          marked.map((row) => row.id as SessionID),
-                        ),
+          if (remaining.length > 0) {
+            const blocking = remaining.map((lease) => lease.session_id as SessionID)
+            yield* asFamilyError(
+              db.transaction(
+                (tx) =>
+                  Effect.gen(function* () {
+                    const marked = step1.rows
+                    if (marked.length > 0) {
+                      yield* tx
+                        .update(SessionTable)
+                        .set({ archive_state: null, archive_state_at: null })
+                        .where(
+                          inArray(
+                            SessionTable.id,
+                            marked.map((row) => row.id as SessionID),
+                          ),
+                        )
+                        .run()
+                        .pipe(Effect.orDie)
+                      yield* publishRows(
+                        tx,
+                        marked.map((row) => ({ row, override: { archiveState: null, archiveStateAt: null } })),
                       )
-                      .run()
-                      .pipe(Effect.orDie)
-                    yield* publishRows(
-                      tx,
-                      marked.map((row) => ({ row, override: { archiveState: null, archiveStateAt: null } })),
-                    )
-                  }
-                  for (const lease of remaining) {
-                    yield* tx
-                      .update(SessionRunLeaseTable)
-                      .set({ cancel_requested: 0 })
-                      .where(eq(SessionRunLeaseTable.session_id, lease.session_id))
-                      .run()
-                      .pipe(Effect.orDie)
-                  }
-                }),
-              { behavior: "immediate" },
-            ),
-          )
-          return yield* Effect.fail(
-            new ArchiveBlockedError({
-              sessionID: input.sessionID,
-              sessionIDs: blocking,
-              message: `Active sessions did not stop: ${blocking.join(", ")}`,
-            }),
-          )
+                    }
+                    for (const lease of remaining) {
+                      yield* tx
+                        .update(SessionRunLeaseTable)
+                        .set({ cancel_requested: 0 })
+                        .where(eq(SessionRunLeaseTable.session_id, lease.session_id))
+                        .run()
+                        .pipe(Effect.orDie)
+                    }
+                  }),
+                { behavior: "immediate" },
+              ),
+            )
+            return yield* Effect.fail(
+              new ArchiveBlockedError({
+                sessionID: input.sessionID,
+                sessionIDs: blocking,
+                message: `Active sessions did not stop: ${blocking.join(", ")}`,
+              }),
+            )
+          }
         }
       }
 
