@@ -13,6 +13,11 @@ const lock = Semaphore.makeUnsafe(1)
 export type Migration = {
   id: string
   up: (tx: Transaction) => Effect.Effect<void, unknown>
+  /**
+   * Hand-written migrations that are not represented in the generated schema
+   * (for example triggers) must opt in so fresh databases run them too.
+   */
+  runsOnFreshSchema?: boolean
 }
 
 export function apply(db: Database) {
@@ -26,6 +31,10 @@ export function apply(db: Database) {
       yield* db.transaction((tx) =>
         Effect.gen(function* () {
           yield* schema.up(tx)
+          yield* Effect.forEach(
+            (migrations as Migration[]).filter((migration) => migration.runsOnFreshSchema),
+            (migration) => migration.up(tx),
+          )
           yield* tx.run(
             sql`CREATE TABLE ${sql.identifier("migration")} (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`,
           )

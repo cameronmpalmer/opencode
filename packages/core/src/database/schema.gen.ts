@@ -125,6 +125,13 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`family_archive_migration\` (
+          \`root_session_id\` text PRIMARY KEY,
+          \`root_archived_at\` integer NOT NULL,
+          \`applied_at\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`message\` (
           \`id\` text PRIMARY KEY,
           \`session_id\` text NOT NULL,
@@ -146,12 +153,24 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`session_archive_guard\` (
+          \`session_id\` text PRIMARY KEY,
+          \`expires_at\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`session_context_epoch\` (
           \`session_id\` text PRIMARY KEY,
           \`baseline\` text NOT NULL,
           \`snapshot\` text NOT NULL,
           \`baseline_seq\` integer NOT NULL,
           CONSTRAINT \`fk_session_context_epoch_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`session_import_exempt\` (
+          \`session_id\` text PRIMARY KEY,
+          \`expires_at\` integer NOT NULL
         );
       `)
       yield* tx.run(`
@@ -176,6 +195,14 @@ export default {
           \`time_updated\` integer NOT NULL,
           \`data\` text NOT NULL,
           CONSTRAINT \`fk_session_message_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`session_run_lease\` (
+          \`session_id\` text PRIMARY KEY,
+          \`lease_id\` text NOT NULL,
+          \`heartbeat_at\` integer NOT NULL,
+          \`cancel_requested\` integer DEFAULT 0 NOT NULL
         );
       `)
       yield* tx.run(`
@@ -209,6 +236,10 @@ export default {
           \`time_updated\` integer NOT NULL,
           \`time_compacting\` integer,
           \`time_archived\` integer,
+          \`family_archive_id\` text,
+          \`archive_cause\` text,
+          \`archive_state\` text,
+          \`archive_state_at\` integer,
           CONSTRAINT \`fk_session_project_id_project_id_fk\` FOREIGN KEY (\`project_id\`) REFERENCES \`project\`(\`id\`) ON DELETE CASCADE
         );
       `)
@@ -265,9 +296,12 @@ export default {
         `CREATE INDEX \`session_message_session_time_created_id_idx\` ON \`session_message\` (\`session_id\`,\`time_created\`,\`id\`);`,
       )
       yield* tx.run(`CREATE INDEX \`session_message_time_created_idx\` ON \`session_message\` (\`time_created\`);`)
+      yield* tx.run(`CREATE INDEX \`session_run_lease_heartbeat_idx\` ON \`session_run_lease\` (\`heartbeat_at\`);`)
       yield* tx.run(`CREATE INDEX \`session_project_idx\` ON \`session\` (\`project_id\`);`)
       yield* tx.run(`CREATE INDEX \`session_workspace_idx\` ON \`session\` (\`workspace_id\`);`)
       yield* tx.run(`CREATE INDEX \`session_parent_idx\` ON \`session\` (\`parent_id\`);`)
+      yield* tx.run(`CREATE INDEX \`session_family_archive_idx\` ON \`session\` (\`family_archive_id\`);`)
+      yield* tx.run(`CREATE INDEX \`session_archive_state_idx\` ON \`session\` (\`archive_state\`);`)
       yield* tx.run(`CREATE INDEX \`todo_session_idx\` ON \`todo\` (\`session_id\`);`)
     })
   },
