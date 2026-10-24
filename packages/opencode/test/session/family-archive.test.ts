@@ -549,3 +549,64 @@ describe("family archive", () => {
     }),
   )
 })
+
+describe("family member counts", () => {
+  it.instance(
+    "counts archived families across pages and keeps an independently archived child",
+    () =>
+      Effect.gen(function* () {
+        const session = yield* SessionNs.Service
+        const { db } = yield* Database.Service
+        const P = yield* session.create({ title: "P" })
+        const C = yield* session.create({ parentID: P.id, title: "C" })
+        const G = yield* session.create({ parentID: C.id, title: "G" })
+
+        yield* db
+          .update(SessionTable)
+          .set({ time_updated: 10 })
+          .where(eq(SessionTable.id, P.id))
+          .run()
+          .pipe(Effect.orDie)
+        yield* db
+          .update(SessionTable)
+          .set({ time_updated: 20 })
+          .where(eq(SessionTable.id, C.id))
+          .run()
+          .pipe(Effect.orDie)
+        yield* db
+          .update(SessionTable)
+          .set({ time_updated: 30 })
+          .where(eq(SessionTable.id, G.id))
+          .run()
+          .pipe(Effect.orDie)
+
+        // C is archived independently of P first, so C and G form their own family.
+        yield* session.archiveSubtree({ sessionID: C.id })
+        yield* session.archiveSubtree({ sessionID: P.id })
+
+        const first = yield* session.listGlobal({ archived: true, limit: 1 })
+        expect(first.map((item) => item.id)).toEqual([G.id])
+        expect(first[0]?.familyMemberCount).toBe(2)
+
+        const second = yield* session.listGlobal({
+          archived: true,
+          limit: 1,
+          cursor: first[0]!.time.updated,
+        })
+        expect(second.map((item) => item.id)).toEqual([C.id])
+        expect(second[0]?.familyMemberCount).toBe(2)
+
+        const third = yield* session.listGlobal({
+          archived: true,
+          limit: 1,
+          cursor: second[0]!.time.updated,
+        })
+        expect(third.map((item) => item.id)).toEqual([P.id])
+        expect(third[0]?.familyMemberCount).toBe(1)
+
+        const live = yield* session.listGlobal({ limit: 10 })
+        expect(live.every((item) => item.familyMemberCount === undefined)).toBe(true)
+      }),
+    { git: true },
+  )
+})

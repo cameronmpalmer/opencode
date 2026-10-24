@@ -30,6 +30,7 @@ import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import type { SQL } from "drizzle-orm"
 import {
+  effectiveFamilyKeySql,
   FamilyArchiveMigrationTable,
   PartTable,
   SessionArchiveGuardTable,
@@ -275,6 +276,7 @@ export type ProjectInfo = Types.DeepMutable<Schema.Schema.Type<typeof ProjectInf
 
 export const GlobalInfo = Schema.Struct({
   ...Info.fields,
+  familyMemberCount: optional(NonNegativeInt),
   project: Schema.NullOr(ProjectInfo),
 }).annotate({ identifier: "GlobalSession" })
 export type GlobalInfo = Types.DeepMutable<Schema.Schema.Type<typeof GlobalInfo>>
@@ -721,6 +723,28 @@ const layer: Layer.Layer<
         .limit(input?.limit ?? 100)
         .all()
         .pipe(Effect.orDie)
+      let familyCounts: Map<string, number> | undefined
+      let familyKeys: Map<string, string> | undefined
+      if (input?.archived && rows.length > 0) {
+        // The aggregate must cover every archived row in the family, not just
+        // the rows on this page, because a family can be split by pagination.
+        const keys = yield* db
+          .all<{ session_id: string; family_key: string }>(sql`${effectiveFamilyKeySql}`)
+          .pipe(Effect.orDie)
+        const counts = yield* db
+          .all<{ family_key: string; member_count: number }>(
+            sql`
+            SELECT keys.family_key AS family_key, COUNT(*) AS member_count
+            FROM (${effectiveFamilyKeySql}) AS keys
+            JOIN session ON session.id = keys.session_id
+            WHERE session.time_archived IS NOT NULL
+            GROUP BY keys.family_key
+          `,
+          )
+          .pipe(Effect.orDie)
+        familyKeys = new Map(keys.map((item) => [item.session_id, item.family_key]))
+        familyCounts = new Map(counts.map((item) => [item.family_key, Number(item.member_count)]))
+      }
       const ids = [...new Set(rows.map((row) => row.project_id))]
       const projects = new Map<string, ProjectInfo>()
       if (ids.length > 0) {
@@ -738,7 +762,11 @@ const layer: Layer.Layer<
           })
         }
       }
-      return rows.map((row) => ({ ...fromRow(row), project: projects.get(row.project_id) ?? null }))
+      return rows.map((row) => ({
+        ...fromRow(row),
+        ...(familyCounts ? { familyMemberCount: familyCounts.get(familyKeys?.get(row.id) ?? row.id) ?? 0 } : {}),
+        project: projects.get(row.project_id) ?? null,
+      }))
     })
 
     const children = Effect.fn("Session.children")(function* (parentID: SessionID) {
