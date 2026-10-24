@@ -101,7 +101,7 @@ export function transformShareData(shareData: ShareData[]): {
   }
 }
 
-type ExportData = { info: SDKSession; messages: Array<{ info: Message; parts: Part[] }> }
+export type ExportData = { info: SDKSession; messages: Array<{ info: Message; parts: Part[] }> }
 
 export const ImportCommand = effectCmd({
   command: "import <file>",

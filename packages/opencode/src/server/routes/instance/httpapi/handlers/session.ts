@@ -206,10 +206,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         }
       }
       const requested = ctx.payload.time?.archived
-      if (requested !== undefined && flags.familyArchive) {
-        if (requested === null) {
-          yield* SessionError.mapArchiveErrors(session.unarchiveSubtree({ sessionID: ctx.params.sessionID }))
-        } else {
+      if (requested === null) {
+        // Unarchive is not gated by the family flag: a null archived value always restores
+        // the family so migrated rows stay restorable while the flag is off.
+        yield* SessionError.mapArchiveErrors(session.unarchiveSubtree({ sessionID: ctx.params.sessionID }))
+      } else if (requested !== undefined) {
+        if (flags.familyArchive) {
           yield* SessionError.mapArchiveErrors(
             session.archiveSubtree({
               sessionID: ctx.params.sessionID,
@@ -217,11 +219,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
               interrupt: (sessionID) => execution.interrupt(sessionID),
             }),
           )
+        } else {
+          yield* SessionError.mapArchiveErrors(
+            session.setArchived({ sessionID: ctx.params.sessionID, time: requested }),
+          )
         }
-      } else if (requested !== undefined) {
-        yield* SessionError.mapArchiveErrors(
-          session.setArchived({ sessionID: ctx.params.sessionID, time: requested ?? undefined }),
-        )
       }
       return yield* requireSession(ctx.params.sessionID)
     })
@@ -240,7 +242,12 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     }) {
       yield* requireFamilyArchive()
       yield* requireSession(ctx.params.sessionID)
-      return yield* SessionError.mapArchiveErrors(session.archivePreview({ sessionID: ctx.params.sessionID }))
+      return yield* SessionError.mapArchiveErrors(
+        session.archivePreview({
+          sessionID: ctx.params.sessionID,
+          active: execution.active,
+        }),
+      )
     })
 
     const archive = Effect.fn("SessionHttpApi.archive")(function* (ctx: { params: { sessionID: SessionID } }) {

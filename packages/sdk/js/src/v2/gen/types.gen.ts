@@ -209,7 +209,7 @@ export type Session = {
     created: number
     updated: number
     compacting?: number
-    archived?: number
+    archived?: number | null
   }
   permission?: PermissionRuleset
   revert?: {
@@ -218,6 +218,10 @@ export type Session = {
     snapshot?: string
     diff?: string
   }
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
 }
 
 export type OutputFormatText = {

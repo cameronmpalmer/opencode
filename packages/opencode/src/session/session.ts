@@ -18,6 +18,7 @@ import { NotFoundError } from "@/storage/storage"
 import { eq } from "drizzle-orm"
 import { and } from "drizzle-orm"
 import { gte } from "drizzle-orm"
+import { isNotNull } from "drizzle-orm"
 import { isNull } from "drizzle-orm"
 import { desc } from "drizzle-orm"
 import { like } from "drizzle-orm"
@@ -45,7 +46,7 @@ import { SessionStatus } from "./status"
 
 import type { Provider } from "@/provider/provider"
 import { Global } from "@opencode-ai/core/global"
-import { Effect, Layer, Option, Context, Schema, Types } from "effect"
+import { Effect, Exit, Layer, Option, Context, Schema, Types } from "effect"
 import { NonNegativeInt, optional } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -529,7 +530,10 @@ export interface Interface {
   readonly get: (id: SessionID) => Effect.Effect<Info, NotFound>
   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void, FamilyError | NotFound>
-  readonly archivePreview: (input: { sessionID: SessionID }) => Effect.Effect<ArchivePreview, FamilyError | NotFound>
+  readonly archivePreview: (input: {
+    sessionID: SessionID
+    active?: Effect.Effect<ReadonlySet<SessionID>>
+  }) => Effect.Effect<ArchivePreview, FamilyError | NotFound>
   readonly archiveSubtree: (input: {
     sessionID: SessionID
     archivedAt?: number
@@ -670,7 +674,8 @@ const layer: Layer.Layer<
       if (input?.start) conditions.push(gte(SessionTable.time_updated, input.start))
       if (input?.cursor) conditions.push(lt(SessionTable.time_updated, input.cursor))
       if (input?.search) conditions.push(like(SessionTable.title, `%${input.search}%`))
-      if (!input?.archived) conditions.push(isNull(SessionTable.time_archived))
+      if (input?.archived) conditions.push(isNotNull(SessionTable.time_archived))
+      else conditions.push(isNull(SessionTable.time_archived))
 
       const query =
         conditions.length > 0
@@ -880,10 +885,12 @@ const layer: Layer.Layer<
       tx
         .all<{ id: string }>(
           sql`
-          WITH RECURSIVE subtree(id) AS (
-            SELECT id FROM session WHERE id = ${rootID}
+          WITH RECURSIVE subtree(id, path) AS (
+            SELECT id, ',' || id || ',' FROM session WHERE id = ${rootID}
             UNION ALL
-            SELECT session.id FROM session JOIN subtree ON session.parent_id = subtree.id
+            SELECT session.id, subtree.path || session.id || ','
+            FROM session JOIN subtree ON session.parent_id = subtree.id
+            WHERE instr(subtree.path, ',' || session.id || ',') = 0
           )
           SELECT id FROM subtree
         `,
@@ -1027,12 +1034,16 @@ const layer: Layer.Layer<
     })
 
     const isDirectFamilyMember = (row: SessionRow) =>
+      row.time_archived !== null &&
       row.archive_cause !== null &&
       row.archive_cause !== "user" &&
       row.family_archive_id !== null &&
       row.family_archive_id !== row.id
 
-    const archivePreview = Effect.fn("Session.archivePreview")(function* (input: { sessionID: SessionID }) {
+    const archivePreview = Effect.fn("Session.archivePreview")(function* (input: {
+      sessionID: SessionID
+      active?: Effect.Effect<ReadonlySet<SessionID>>
+    }) {
       const root = yield* db
         .select()
         .from(SessionTable)
@@ -1053,6 +1064,7 @@ const layer: Layer.Layer<
       const ids = rows.map((row) => row.id as SessionID)
       const leases = yield* liveLeases(db as unknown as Tx, ids)
       const local = new Set<string>([...((yield* status.list()).keys() as Iterable<string>)])
+      if (input.active) for (const id of yield* input.active) local.add(id)
       const active = new Set<string>(leases.map((lease) => lease.session_id))
       for (const id of ids) if (local.has(id)) active.add(id)
       if (local.has(root.id)) active.add(root.id)
@@ -1064,6 +1076,45 @@ const layer: Layer.Layer<
         active_session_ids: activeIDs as SessionID[],
       }
     })
+
+    // Undo the step-1 markers after any post-step-1 failure. Runs in its own immediate
+    // transaction so a partial final transaction cannot leave an "archiving" marker behind.
+    // Archive fields other than the transient markers are deliberately untouched.
+    const clearMarkersAfterFailure = (rows: SessionRow[], cancelSnapshot: Map<string, number>) =>
+      db
+        .transaction(
+          (tx) =>
+            Effect.gen(function* () {
+              const ids = rows.map((row) => row.id as SessionID)
+              if (ids.length > 0) {
+                const current = yield* tx
+                  .select()
+                  .from(SessionTable)
+                  .where(inArray(SessionTable.id, ids))
+                  .all()
+                  .pipe(Effect.orDie)
+                yield* publishRows(
+                  tx,
+                  current
+                    .filter((row) => row.archive_state === "archiving")
+                    .map((row) => ({
+                      row,
+                      override: { archiveState: null, archiveStateAt: null },
+                    })),
+                )
+              }
+              for (const [sessionID, cancelRequested] of cancelSnapshot) {
+                yield* tx
+                  .update(SessionRunLeaseTable)
+                  .set({ cancel_requested: cancelRequested })
+                  .where(eq(SessionRunLeaseTable.session_id, sessionID as SessionID))
+                  .run()
+                  .pipe(Effect.orDie)
+              }
+            }),
+          { behavior: "immediate" },
+        )
+        .pipe(Effect.orDie)
 
     const archiveSubtree = Effect.fn("Session.archiveSubtree")(function* (input: {
       sessionID: SessionID
@@ -1132,17 +1183,8 @@ const layer: Layer.Layer<
               // fields and timestamps untouched.
               const marked = allArchived ? rows : rows.filter((row) => row.time_archived === null)
               if (marked.length > 0) {
-                yield* tx
-                  .update(SessionTable)
-                  .set({ archive_state: "archiving", archive_state_at: now })
-                  .where(
-                    inArray(
-                      SessionTable.id,
-                      marked.map((row) => row.id as SessionID),
-                    ),
-                  )
-                  .run()
-                  .pipe(Effect.orDie)
+                // The marker is applied by the projector under the guard rows inserted by
+                // publishRows. Never write archive fields directly before a guard exists.
                 yield* publishRows(
                   tx,
                   marked.map((row) => ({
@@ -1171,164 +1213,154 @@ const layer: Layer.Layer<
       const localActive = new Set<string>([...((yield* status.list()).keys() as Iterable<string>)])
       const localCancelled = subtree.filter((sessionID) => localActive.has(sessionID))
       const cancelled = [...new Set<SessionID>([...step1.leases.map((lease) => lease.session_id), ...localCancelled])]
+      const cancelSnapshot = new Map<string, number>(
+        step1.leases.map((lease) => [lease.session_id, lease.cancel_requested]),
+      )
 
-      if (step1.leases.length > 0 || localCancelled.length > 0) {
-        yield* db
-          .update(SessionRunLeaseTable)
-          .set({ cancel_requested: 1 })
-          .where(
-            inArray(
-              SessionRunLeaseTable.session_id,
-              step1.leases.map((lease) => lease.session_id as SessionID),
-            ),
-          )
-          .run()
-          .pipe(Effect.orDie)
-        if (input.interrupt) {
-          const interrupt = input.interrupt
-          yield* Effect.forEach(
-            subtree,
-            (sessionID) => interrupt(sessionID).pipe(Effect.catchCause(() => Effect.void)),
-            { concurrency: "unbounded", discard: true },
-          )
-        }
-
-        if (step1.leases.length > 0) {
-          const timeout = input.waitTimeoutMs ?? 30_000
-          const deadline = Date.now() + timeout
-          let remaining = yield* liveLeases(db as unknown as Tx, subtree)
-          while (remaining.length > 0 && Date.now() < deadline) {
-            yield* Effect.sleep("25 millis")
-            remaining = yield* liveLeases(db as unknown as Tx, subtree)
+      const work = Effect.gen(function* () {
+        if (step1.leases.length > 0 || localCancelled.length > 0) {
+          if (step1.leases.length > 0) {
+            yield* db
+              .update(SessionRunLeaseTable)
+              .set({ cancel_requested: 1 })
+              .where(
+                inArray(
+                  SessionRunLeaseTable.session_id,
+                  step1.leases.map((lease) => lease.session_id as SessionID),
+                ),
+              )
+              .run()
+              .pipe(Effect.orDie)
           }
-
-          if (remaining.length > 0) {
-            const blocking = remaining.map((lease) => lease.session_id as SessionID)
-            yield* asFamilyError(
-              db.transaction(
-                (tx) =>
-                  Effect.gen(function* () {
-                    const marked = step1.rows
-                    if (marked.length > 0) {
-                      yield* tx
-                        .update(SessionTable)
-                        .set({ archive_state: null, archive_state_at: null })
-                        .where(
-                          inArray(
-                            SessionTable.id,
-                            marked.map((row) => row.id as SessionID),
-                          ),
-                        )
-                        .run()
-                        .pipe(Effect.orDie)
-                      yield* publishRows(
-                        tx,
-                        marked.map((row) => ({ row, override: { archiveState: null, archiveStateAt: null } })),
-                      )
-                    }
-                    for (const lease of remaining) {
-                      yield* tx
-                        .update(SessionRunLeaseTable)
-                        .set({ cancel_requested: 0 })
-                        .where(eq(SessionRunLeaseTable.session_id, lease.session_id))
-                        .run()
-                        .pipe(Effect.orDie)
-                    }
-                  }),
-                { behavior: "immediate" },
-              ),
-            )
-            return yield* Effect.fail(
-              new ArchiveBlockedError({
-                sessionID: input.sessionID,
-                sessionIDs: blocking,
-                message: `Active sessions did not stop: ${blocking.join(", ")}`,
-              }),
+          if (input.interrupt) {
+            const interrupt = input.interrupt
+            yield* Effect.forEach(
+              subtree,
+              (sessionID) => interrupt(sessionID).pipe(Effect.catchCause(() => Effect.void)),
+              { concurrency: "unbounded", discard: true },
             )
           }
+
+          if (step1.leases.length > 0) {
+            const timeout = input.waitTimeoutMs ?? 30_000
+            const deadline = Date.now() + timeout
+            let remaining = yield* liveLeases(db as unknown as Tx, subtree)
+            while (remaining.length > 0 && Date.now() < deadline) {
+              yield* Effect.sleep("25 millis")
+              remaining = yield* liveLeases(db as unknown as Tx, subtree)
+            }
+
+            if (remaining.length > 0) {
+              const blocking = remaining.map((lease) => lease.session_id as SessionID)
+              // The failure finalizer clears the markers and restores the recorded
+              // cancel_requested values before this error reaches the caller.
+              return yield* Effect.fail(
+                new ArchiveBlockedError({
+                  sessionID: input.sessionID,
+                  sessionIDs: blocking,
+                  message: `Active sessions did not stop: ${blocking.join(", ")}`,
+                }),
+              )
+            }
+          }
         }
-      }
 
-      return yield* asFamilyError(
-        db.transaction(
-          (tx) =>
-            Effect.gen(function* () {
-              const root = yield* tx
-                .select()
-                .from(SessionTable)
-                .where(eq(SessionTable.id, input.sessionID))
-                .get()
-                .pipe(Effect.orDie)
-              if (!root)
-                return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${input.sessionID}` }))
-              const rows = orderSubtree(yield* loadSubtree(tx, root.id))
-              const marked = new Set(step1.rows.map((row) => row.id))
-              const finalized = new Map<string, { familyKey: string; archiveTime: number }>()
-              const archivedIDs: SessionID[] = []
-              const alreadyArchivedIDs: SessionID[] = []
-              const changed: { row: SessionRow; override?: ArchiveOverride }[] = []
+        return yield* asFamilyError(
+          db.transaction(
+            (tx) =>
+              Effect.gen(function* () {
+                const root = yield* tx
+                  .select()
+                  .from(SessionTable)
+                  .where(eq(SessionTable.id, input.sessionID))
+                  .get()
+                  .pipe(Effect.orDie)
+                if (!root)
+                  return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${input.sessionID}` }))
+                const rows = orderSubtree(yield* loadSubtree(tx, root.id))
+                const marked = new Set(step1.rows.map((row) => row.id))
+                const finalized = new Map<string, { familyKey: string; archiveTime: number }>()
+                const archivedIDs: SessionID[] = []
+                const alreadyArchivedIDs: SessionID[] = []
+                const changed: { row: SessionRow; override?: ArchiveOverride }[] = []
 
-              for (const row of rows) {
-                const next: Partial<SessionRow> = {}
-                if (row.time_archived === null) {
-                  const parent = row.parent_id ? finalized.get(row.parent_id) : undefined
-                  const familyKey = row.id === root.id ? root.id : (parent?.familyKey ?? root.id)
-                  const archiveTime =
-                    row.id === root.id ? step1.archiveTime : (parent?.archiveTime ?? step1.archiveTime)
-                  next.time_archived = archiveTime
-                  next.family_archive_id = familyKey as SessionRow["family_archive_id"]
-                  next.archive_cause = row.id === root.id ? (row.archive_cause ?? "user") : "cascade"
-                  archivedIDs.push(row.id as SessionID)
-                } else {
-                  alreadyArchivedIDs.push(row.id as SessionID)
-                  if (row.id === root.id) {
-                    next.family_archive_id = (row.family_archive_id ?? root.id) as SessionRow["family_archive_id"]
-                    next.archive_cause = row.archive_cause ?? "user"
+                for (const row of rows) {
+                  let merged = row
+                  if (row.time_archived === null) {
+                    const parent = row.parent_id ? finalized.get(row.parent_id) : undefined
+                    const familyKey = row.id === root.id ? root.id : (parent?.familyKey ?? root.id)
+                    const archiveTime =
+                      row.id === root.id ? step1.archiveTime : (parent?.archiveTime ?? step1.archiveTime)
+                    merged = {
+                      ...row,
+                      time_archived: archiveTime,
+                      family_archive_id: familyKey as SessionRow["family_archive_id"],
+                      archive_cause: row.id === root.id ? (row.archive_cause ?? "user") : "cascade",
+                    } as SessionRow
+                    archivedIDs.push(row.id as SessionID)
+                  } else {
+                    alreadyArchivedIDs.push(row.id as SessionID)
+                    if (row.id === root.id) {
+                      merged = {
+                        ...row,
+                        family_archive_id: (row.family_archive_id ?? root.id) as SessionRow["family_archive_id"],
+                        archive_cause: row.archive_cause ?? "user",
+                      } as SessionRow
+                    }
                   }
+                  if (marked.has(row.id)) {
+                    merged = { ...merged, archive_state: null, archive_state_at: null } as SessionRow
+                  }
+                  finalized.set(row.id, {
+                    familyKey: (merged.family_archive_id ?? merged.id) as string,
+                    archiveTime: merged.time_archived as number,
+                  })
+                  changed.push({
+                    row: merged,
+                    override: {
+                      archived: merged.time_archived,
+                      familyArchiveID: merged.family_archive_id,
+                      archiveCause: merged.archive_cause,
+                      archiveState: null,
+                      archiveStateAt: null,
+                    },
+                  })
                 }
-                if (marked.has(row.id)) {
-                  next.archive_state = null
-                  next.archive_state_at = null
-                }
-                if (Object.keys(next).length > 0) {
-                  yield* tx
-                    .update(SessionTable)
-                    .set(next as never)
-                    .where(eq(SessionTable.id, row.id))
-                    .run()
-                    .pipe(Effect.orDie)
-                }
-                const merged = { ...row, ...next } as SessionRow
-                finalized.set(row.id, {
-                  familyKey: (merged.family_archive_id ?? merged.id) as string,
-                  archiveTime: merged.time_archived as number,
-                })
-                changed.push({
-                  row: merged,
-                  override: { archiveState: null, archiveStateAt: null },
-                })
-              }
 
-              yield* publishRows(tx, changed)
-              yield* tx
-                .insert(FamilyArchiveMigrationTable)
-                .values({ root_session_id: root.id, root_archived_at: step1.archiveTime, applied_at: now })
-                .onConflictDoUpdate({
-                  target: FamilyArchiveMigrationTable.root_session_id,
-                  set: { root_archived_at: step1.archiveTime, applied_at: now },
-                })
-                .run()
-                .pipe(Effect.orDie)
+                // All archive-field writes go through the guarded projector events.
+                yield* publishRows(tx, changed)
+                yield* tx
+                  .insert(FamilyArchiveMigrationTable)
+                  .values({ root_session_id: root.id, root_archived_at: step1.archiveTime, applied_at: now })
+                  .onConflictDoUpdate({
+                    target: FamilyArchiveMigrationTable.root_session_id,
+                    set: { root_archived_at: step1.archiveTime, applied_at: now },
+                  })
+                  .run()
+                  .pipe(Effect.orDie)
 
-              return {
-                root_id: root.id,
-                archived_ids: archivedIDs,
-                already_archived_ids: alreadyArchivedIDs,
-                cancelled_ids: cancelled,
-                archive_time: step1.archiveTime,
-              }
-            }),
-          { behavior: "immediate" },
+                return {
+                  root_id: root.id,
+                  archived_ids: archivedIDs,
+                  already_archived_ids: alreadyArchivedIDs,
+                  cancelled_ids: cancelled,
+                  archive_time: step1.archiveTime,
+                }
+              }),
+            { behavior: "immediate" },
+          ),
+        )
+      })
+
+      return yield* work.pipe(
+        Effect.onExit((exit) =>
+          Exit.isSuccess(exit)
+            ? Effect.void
+            : Effect.uninterruptible(
+                clearMarkersAfterFailure(step1.rows, cancelSnapshot).pipe(
+                  Effect.catchCause((cause) => Effect.logError("family archive cleanup failed", { cause })),
+                ),
+              ),
         ),
       )
     })
@@ -1391,25 +1423,9 @@ const layer: Layer.Layer<
               })
 
               if (restore.length > 0) {
-                yield* tx
-                  .update(SessionTable)
-                  .set({
-                    time_archived: null,
-                    family_archive_id: null,
-                    archive_cause: null,
-                    archive_state: null,
-                    archive_state_at: null,
-                  })
-                  .where(
-                    inArray(
-                      SessionTable.id,
-                      restore.map((row) => row.id as SessionID),
-                    ),
-                  )
-                  .run()
-                  .pipe(Effect.orDie)
-
                 const restored = new Set(restore.map((row) => row.id))
+                // The projector clears the fields under the guard rows; there is no direct
+                // archive-field UPDATE in this transaction.
                 yield* publishRows(
                   tx,
                   rows
