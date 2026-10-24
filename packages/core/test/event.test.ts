@@ -1180,4 +1180,105 @@ describe("EventV2", () => {
       expect(observed).toEqual([])
     }),
   )
+
+  it.live("defers durable wakes until the enclosing transaction commits", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Session.ID.create()
+      const fiber = yield* events.durable({ aggregateID }).pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+      yield* Effect.yieldNow
+
+      const rolledBack = yield* Effect.exit(
+        events.withDeferredNotifications(
+          db.transaction(
+            () =>
+              Effect.gen(function* () {
+                yield* events.publish(DurableMessage, durableData(aggregateID, "rolled back"))
+                return yield* Effect.fail(new Error("rollback"))
+              }),
+            { behavior: "immediate" },
+          ),
+        ),
+      )
+      expect(Exit.isFailure(rolledBack)).toBe(true)
+      expect(Option.isNone(yield* Effect.timeoutOption(Fiber.join(fiber), "50 millis"))).toBe(true)
+
+      yield* events.withDeferredNotifications(
+        db.transaction(
+          () =>
+            Effect.gen(function* () {
+              yield* events.publish(DurableMessage, durableData(aggregateID, "committed"))
+            }),
+          { behavior: "immediate" },
+        ),
+      )
+
+      const committed = yield* Fiber.join(fiber)
+      expect(Array.from(committed).map((event) => event.data as unknown)).toEqual([durableData(aggregateID, "committed")])
+    }),
+  )
+
+  it.live("interruption discards deferred notifications and durable wakes", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const aggregateID = Session.ID.create()
+      const observed = new Array<string>()
+      const unsubscribe = yield* events.listen((event) =>
+        Effect.sync(() => {
+          if (event.type === DurableMessage.type) observed.push(event.type)
+        }),
+      )
+      yield* Effect.addFinalizer(() => unsubscribe)
+      const fiber = yield* events.durable({ aggregateID }).pipe(Stream.take(1), Stream.runCollect, Effect.forkScoped)
+      yield* Effect.yieldNow
+
+      const interrupted = yield* events
+        .withDeferredNotifications(
+          db.transaction(
+            () =>
+              Effect.gen(function* () {
+                yield* events.publish(DurableMessage, durableData(aggregateID, "interrupted"))
+                yield* Effect.never
+              }),
+            { behavior: "immediate" },
+          ),
+        )
+        .pipe(Effect.forkScoped)
+      yield* Effect.yieldNow
+      yield* Fiber.interrupt(interrupted)
+
+      expect(observed).toEqual([])
+      expect(Option.isNone(yield* Effect.timeoutOption(Fiber.join(fiber), "50 millis"))).toBe(true)
+    }),
+  )
+
+  it.effect("flushes deferred notifications in publish order", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const observed = new Array<string>()
+      const unsubscribe = yield* events.listen((event) =>
+        Effect.sync(() => {
+          if (event.type === Message.type) observed.push((event.data as { text: string }).text)
+        }),
+      )
+      yield* Effect.addFinalizer(() => unsubscribe)
+
+      yield* events.withDeferredNotifications(
+        db.transaction(
+          () =>
+            Effect.gen(function* () {
+              yield* events.publish(Message, { text: "first" })
+              yield* events.publish(Message, { text: "second" })
+              expect(observed).toEqual([])
+            }),
+          { behavior: "immediate" },
+        ),
+      )
+
+      expect(observed).toEqual(["first", "second"])
+    }),
+  )
 })

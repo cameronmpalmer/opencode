@@ -153,11 +153,18 @@ export interface Interface {
   readonly withDeferredNotifications: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 }
 
+type DeferredNotification =
+  | { readonly type: "event"; readonly event: Payload; readonly isolateListeners: boolean }
+  | { readonly type: "wake"; readonly aggregateID: string }
+
 // Effect v4 beta has no FiberRef module; a Context.Reference overridden with
 // provideService gives the same fiber-local, automatically-restored semantics.
-const DeferredNotifications = Context.Reference<Ref.Ref<Payload[]> | undefined>("EventV2/DeferredNotifications", {
-  defaultValue: () => undefined,
-})
+// Nested scopes forward the inner queue to its parent on success, so an inner
+// flush never runs before the outer transaction commits.
+const DeferredNotifications = Context.Reference<Ref.Ref<DeferredNotification[]> | undefined>(
+  "EventV2/DeferredNotifications",
+  { defaultValue: () => undefined },
+)
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Event") {}
 
@@ -363,13 +370,7 @@ export const layerWith = (options?: LayerOptions) =>
                       { behavior: "immediate" },
                     )
                     .pipe(Effect.orDie)
-                  if (committed) {
-                    yield* Effect.forEach(
-                      pubsub.durable.get(committed.aggregateID) ?? [],
-                      (wake) => PubSub.publish(wake, undefined),
-                      { discard: true },
-                    )
-                  }
+                  if (committed) yield* wake(committed.aggregateID)
                   return committed
                 }),
               )
@@ -428,11 +429,28 @@ export const layerWith = (options?: LayerOptions) =>
         })
       }
 
+      function publishWakes(aggregateID: string) {
+        return Effect.forEach(pubsub.durable.get(aggregateID) ?? [], (wake) => PubSub.publish(wake, undefined), {
+          discard: true,
+        })
+      }
+
+      function wake(aggregateID: string) {
+        return Effect.gen(function* () {
+          const deferred = yield* DeferredNotifications
+          if (deferred) {
+            yield* Ref.update(deferred, (items) => [...items, { type: "wake" as const, aggregateID }])
+            return
+          }
+          yield* publishWakes(aggregateID)
+        })
+      }
+
       function notify(event: Payload, isolateListeners: boolean) {
         return Effect.gen(function* () {
           const deferred = yield* DeferredNotifications
           if (deferred) {
-            yield* Ref.update(deferred, (events) => [...events, event])
+            yield* Ref.update(deferred, (items) => [...items, { type: "event" as const, event, isolateListeners }])
             return
           }
           yield* emit(event, isolateListeners)
@@ -441,20 +459,30 @@ export const layerWith = (options?: LayerOptions) =>
 
       const withDeferredNotifications = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
         Effect.acquireUseRelease(
-          Effect.uninterruptible(Ref.make<Payload[]>([])),
+          Effect.uninterruptible(Ref.make<DeferredNotification[]>([])),
           (queue) =>
             Effect.provideService(effect, DeferredNotifications, queue).pipe(
-              Effect.onExit((exit) =>
-                Exit.isSuccess(exit)
-                  ? Effect.uninterruptible(
-                      Ref.get(queue).pipe(
-                        Effect.flatMap((events) =>
-                          Effect.forEach(events, (event) => emit(event, true), { discard: true }),
-                        ),
-                      ),
-                    )
-                  : Effect.void,
-              ),
+              Effect.onExit((exit) => {
+                if (!Exit.isSuccess(exit)) return Effect.void
+                return Effect.uninterruptible(
+                  Effect.gen(function* () {
+                    // Clear before flushing: a listener that publishes during the
+                    // flush must emit directly instead of being appended to a queue
+                    // that has already been consumed.
+                    const items = yield* Ref.get(queue)
+                    yield* Ref.set(queue, [])
+                    const parent = yield* DeferredNotifications
+                    if (parent) {
+                      yield* Ref.update(parent, (existing) => [...existing, ...items])
+                      return
+                    }
+                    for (const item of items) {
+                      if (item.type === "wake") yield* publishWakes(item.aggregateID)
+                      else yield* emit(item.event, item.isolateListeners)
+                    }
+                  }),
+                )
+              }),
             ),
           () => Effect.void,
         )
