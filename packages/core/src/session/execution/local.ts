@@ -1,10 +1,11 @@
-import { Cause, Effect, Layer } from "effect"
+import { Cause, Effect, Layer, Option } from "effect"
 import { Database } from "../../database/database"
 import { LocationServiceMap } from "../../location-service-map"
 import { makeGlobalNode } from "../../effect/app-node"
 import { SessionRunCoordinator } from "../run-coordinator"
 import { SessionRunner } from "../runner"
 import { SessionExecution } from "../execution"
+import { SessionArchivedError, SessionLeaseBusyError } from "../error"
 import { SessionSchema } from "../schema"
 import { SessionStore } from "../store"
 import { withRunLease, type Timing } from "./run-lease"
@@ -30,11 +31,19 @@ export const makeLayer = (timing: Partial<Timing> = {}) =>
             }),
           ).pipe(
             Effect.provide(locations.get(session.location)),
-            Effect.tapCause((cause) =>
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.void
-                : Effect.logError("Failed to drain Session", cause).pipe(Effect.annotateLogs({ sessionID })),
-            ),
+            Effect.tapCause((cause) => {
+              if (Cause.hasInterruptsOnly(cause)) return Effect.void
+              const error = Option.getOrUndefined(Cause.findErrorOption(cause))
+              // Archive cancellation and a live foreign lease are expected stops, not
+              // drain failures. The caller still receives the error.
+              if (
+                !Cause.hasDies(cause) &&
+                (error instanceof SessionArchivedError || error instanceof SessionLeaseBusyError)
+              ) {
+                return Effect.logDebug("Session run stopped", { sessionID })
+              }
+              return Effect.logError("Failed to drain Session", cause).pipe(Effect.annotateLogs({ sessionID }))
+            }),
           )
         }),
       })

@@ -2,7 +2,7 @@ export * as SessionRunLease from "./run-lease"
 
 import { and, eq } from "drizzle-orm"
 import { randomUUID } from "node:crypto"
-import { Deferred, Duration, Effect } from "effect"
+import { Cause, Deferred, Duration, Effect } from "effect"
 import { Database } from "../../database/database"
 import { SessionArchivedError, SessionLeaseBusyError } from "../error"
 import { SessionSchema } from "../schema"
@@ -50,12 +50,35 @@ const acquire = (
   sessionID: SessionSchema.ID,
   leaseID: string,
   timing: Timing,
-): Effect.Effect<void, SessionLeaseBusyError> =>
+): Effect.Effect<void, SessionArchivedError | SessionLeaseBusyError> =>
   db
     .transaction(
       (tx) =>
         Effect.gen(function* () {
           const now = timing.now()
+          const session = yield* tx
+            .select({ archiveState: SessionTable.archive_state, archivedAt: SessionTable.time_archived })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, sessionID))
+            .get()
+            .pipe(Effect.orDie)
+
+          // Checked in the same immediate transaction as the lease insert so A4 cannot
+          // commit the archiving marker between this read and the run starting.
+          if (!session) {
+            return yield* Effect.fail(
+              new SessionArchivedError({ sessionID, message: `Session ${sessionID} disappeared before the run` }),
+            )
+          }
+          if (session.archiveState === "archiving" || session.archivedAt !== null) {
+            return yield* Effect.fail(
+              new SessionArchivedError({
+                sessionID,
+                message: `Session ${sessionID} is already archived or archiving`,
+              }),
+            )
+          }
+
           const existing = yield* tx
             .select()
             .from(SessionRunLeaseTable)
@@ -99,7 +122,12 @@ const acquire = (
         }),
       { behavior: "immediate" },
     )
-    .pipe(Effect.catch((error) => (error instanceof SessionLeaseBusyError ? Effect.fail(error) : Effect.die(error))))
+    .pipe(
+      Effect.catch((error) => {
+        if (error instanceof SessionLeaseBusyError || error instanceof SessionArchivedError) return Effect.fail(error)
+        return Effect.die(error)
+      }),
+    )
 
 const release = (db: Database.Interface["db"], sessionID: SessionSchema.ID, leaseID: string) =>
   Effect.uninterruptible(
@@ -107,7 +135,18 @@ const release = (db: Database.Interface["db"], sessionID: SessionSchema.ID, leas
       .delete(SessionRunLeaseTable)
       .where(and(eq(SessionRunLeaseTable.session_id, sessionID), eq(SessionRunLeaseTable.lease_id, leaseID)))
       .run()
-      .pipe(Effect.orDie, Effect.asVoid),
+      .pipe(
+        Effect.asVoid,
+        // A release defect must not replace the run's original exit; leave the row for
+        // stale replacement instead.
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to release session run lease", {
+            sessionID,
+            leaseID,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      ),
   )
 
 const heartbeatLoop = (

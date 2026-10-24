@@ -345,6 +345,23 @@ describe("SessionRunLease", () => {
     }),
   )
 
+  it.live("does not acquire a lease or start a run for an already-archiving session", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_lease_acquire_archiving")
+      yield* seedSession(sessionID)
+      yield* updateArchiveFields(sessionID, { archive_state: "archiving" })
+      expect(yield* guardCount()).toBe(0)
+      let ran = false
+      behavior = () => Effect.sync(() => (ran = true))
+
+      const exit = yield* (yield* SessionExecution.Service).resume(sessionID).pipe(Effect.exit)
+
+      expect(ran).toBeFalse()
+      expect(failureTag(exit)).toBe("Session.SessionArchivedError")
+      expect(yield* readLease(sessionID)).toBeUndefined()
+    }),
+  )
+
   it.live("stops the run when the session is marked archiving", () =>
     Effect.gen(function* () {
       const sessionID = SessionSchema.ID.make("ses_lease_archiving")
