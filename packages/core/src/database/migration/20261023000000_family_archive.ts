@@ -14,8 +14,7 @@ export default {
       `)
       yield* tx.run(`
         CREATE TABLE \`session_archive_guard\` (
-          \`session_id\` text PRIMARY KEY,
-          \`expires_at\` integer NOT NULL
+          \`session_id\` text PRIMARY KEY
         );
       `)
       yield* tx.run(`

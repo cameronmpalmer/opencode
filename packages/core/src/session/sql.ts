@@ -89,7 +89,6 @@ export const SessionImportExemptTable = sqliteTable("session_import_exempt", {
 
 export const SessionArchiveGuardTable = sqliteTable("session_archive_guard", {
   session_id: text().$type<SessionSchema.ID>().primaryKey(),
-  expires_at: integer().notNull(),
 })
 
 export const FamilyArchiveMigrationTable = sqliteTable("family_archive_migration", {

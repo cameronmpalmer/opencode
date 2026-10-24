@@ -32,7 +32,7 @@ export function apply(db: Database) {
         Effect.gen(function* () {
           yield* schema.up(tx)
           yield* Effect.forEach(
-            (migrations as Migration[]).filter((migration) => migration.runsOnFreshSchema),
+            migrations.filter((migration) => migration.runsOnFreshSchema),
             (migration) => migration.up(tx),
           )
           yield* tx.run(

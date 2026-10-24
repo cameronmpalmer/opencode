@@ -939,16 +939,6 @@
       "table": "session_archive_guard"
     },
     {
-      "type": "integer",
-      "notNull": true,
-      "autoincrement": false,
-      "default": null,
-      "generated": null,
-      "name": "expires_at",
-      "entityType": "columns",
-      "table": "session_archive_guard"
-    },
-    {
       "type": "text",
       "notNull": false,
       "autoincrement": false,
