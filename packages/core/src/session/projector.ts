@@ -96,6 +96,9 @@ function sessionRow(info: SessionV1.SessionInfo): typeof SessionTable.$inferInse
 }
 
 function sessionUpdate(info: SessionV1.SessionInfo): Partial<typeof SessionTable.$inferInsert> {
+  // Mixed omission contract: workspace_id and revert clear on omission to preserve legacy
+  // clear semantics, while archive fields, cost, and tokens are left untouched when omitted.
+  // Archive events must carry the current workspace and revert values.
   const set: Partial<typeof SessionTable.$inferInsert> = {
     project_id: info.projectID,
     slug: info.slug,
@@ -137,7 +140,7 @@ function sessionUpdate(info: SessionV1.SessionInfo): Partial<typeof SessionTable
   return set
 }
 
-function archiveFieldChanges(set: Partial<typeof SessionTable.$inferInsert>) {
+function presentedArchiveFields(set: Partial<typeof SessionTable.$inferInsert>) {
   return archiveFields.filter((field) => set[field] !== undefined)
 }
 
@@ -301,7 +304,7 @@ const layer = Layer.effectDiscard(
     yield* events.project(SessionV1.Event.Updated, (event) =>
       Effect.gen(function* () {
         const set = sessionUpdate(event.data.info)
-        const changedArchiveFields = archiveFieldChanges(set)
+        const changedArchiveFields = presentedArchiveFields(set)
         if (changedArchiveFields.length > 0) {
           const current = yield* db
             .select({
@@ -332,7 +335,6 @@ const layer = Layer.effectDiscard(
             }
           }
         }
-        if (Object.keys(set).length === 0) return
         yield* db
           .update(SessionTable)
           .set(set)

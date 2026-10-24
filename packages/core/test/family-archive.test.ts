@@ -32,14 +32,19 @@ const info = (input: Partial<SessionV1.SessionInfo> = {}): SessionV1.SessionInfo
   ...input,
 })
 
+const seedProject = Effect.gen(function* () {
+  const db = (yield* Database.Service).db
+  yield* db
+    .insert(ProjectTable)
+    .values({ id: projectID, worktree: AbsolutePath.make("/project"), sandboxes: [] })
+    .onConflictDoNothing()
+    .run()
+  return db
+})
+
 const seedArchivedRow = (values: Partial<typeof SessionTable.$inferInsert> = {}) =>
   Effect.gen(function* () {
-    const db = (yield* Database.Service).db
-    yield* db
-      .insert(ProjectTable)
-      .values({ id: projectID, worktree: AbsolutePath.make("/project"), sandboxes: [] })
-      .onConflictDoNothing()
-      .run()
+    const db = yield* seedProject
     yield* db
       .insert(SessionTable)
       .values({
@@ -72,13 +77,14 @@ describe("family archive projector", () => {
         archive_cause: "user",
       })
 
-      yield* projectUpdated({ title: "new title", time: { created: 1, updated: 2 } })
+      yield* projectUpdated({})
 
       const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
       expect(row?.family_archive_id).toBe(sessionID)
       expect(row?.archive_cause).toBe("user")
       expect(row?.time_archived).toBe(1000)
-      expect(row?.title).toBe("new title")
+      expect(row?.title).toBe("old title")
+      expect(yield* db.select().from(EventTable).all()).toHaveLength(1)
     }),
   )
 
@@ -92,7 +98,7 @@ describe("family archive projector", () => {
         archive_state_at: 2000,
       })
 
-      yield* projectUpdated({ title: "new title", time: { created: 1, updated: 2 } })
+      yield* projectUpdated({})
 
       const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
       expect(row?.archive_state).toBe("archiving")
@@ -202,7 +208,7 @@ describe("family archive projector", () => {
         archiveCause: null,
         archiveState: null,
         archiveStateAt: null,
-        time: { created: 1, updated: 2, archived: 1000 },
+        time: { created: 1, updated: 1, archived: 1000 },
       })
 
       const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
@@ -225,12 +231,136 @@ describe("family archive projector", () => {
       yield* projectUpdated({
         familyArchiveID: sessionID,
         archiveCause: "user",
-        time: { created: 1, updated: 2, archived: 1000 },
+        time: { created: 1, updated: 1, archived: 1000 },
       })
 
       const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
-      expect(row?.time_updated).toBe(2)
+      expect(row?.time_updated).toBe(1)
       expect(row?.family_archive_id).toBe(sessionID)
+    }),
+  )
+
+  it.effect("authorizes archive fields and removes the guard inside one transaction", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow()
+
+      yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* tx.insert(SessionArchiveGuardTable).values({ session_id: sessionID }).run()
+            yield* projectUpdated({
+              familyArchiveID: sessionID,
+              archiveCause: "user",
+              time: { created: 1, updated: 1, archived: 1000 },
+            })
+            yield* tx.delete(SessionArchiveGuardTable).where(eq(SessionArchiveGuardTable.session_id, sessionID)).run()
+          }),
+        )
+        .pipe(Effect.orDie)
+
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
+      expect(row?.family_archive_id).toBe(sessionID)
+      expect(row?.archive_cause).toBe("user")
+      expect(row?.time_archived).toBe(1000)
+      expect(yield* db.select().from(SessionArchiveGuardTable).all()).toHaveLength(0)
+    }),
+  )
+
+  it.effect("a guarded archive-field update with time.archived null clears the timestamp", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow({
+        time_archived: 1000,
+        family_archive_id: sessionID,
+        archive_cause: "user",
+      })
+      yield* db.insert(SessionArchiveGuardTable).values({ session_id: sessionID }).run()
+
+      yield* projectUpdated({ time: { created: 1, updated: 1, archived: null } })
+
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
+      expect(row?.time_archived).toBeNull()
+      expect(row?.family_archive_id).toBe(sessionID)
+    }),
+  )
+
+  it.effect("refuses a time.archived-only update without a guard row", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow({ time_archived: 1000 })
+
+      const exit = yield* projectUpdated({ time: { created: 1, updated: 1, archived: null } }).pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const defect = exit.cause.reasons.find(Cause.isDieReason)?.defect
+      expect(defect).toBeInstanceOf(SessionProjector.SessionArchiveGuardRequired)
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
+      expect(row?.time_archived).toBe(1000)
+    }),
+  )
+
+  it.effect("a guard row for a different session does not authorize the update", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow()
+      yield* db
+        .insert(SessionArchiveGuardTable)
+        .values({ session_id: SessionSchema.ID.make("ses_other") })
+        .run()
+
+      const exit = yield* projectUpdated({ familyArchiveID: sessionID }).pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const defect = exit.cause.reasons.find(Cause.isDieReason)?.defect
+      expect(defect).toBeInstanceOf(SessionProjector.SessionArchiveGuardRequired)
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
+      expect(row?.family_archive_id).toBeNull()
+    }),
+  )
+
+  it.effect("a null-to-null archive update does not require a guard row", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow()
+
+      yield* projectUpdated({
+        familyArchiveID: null,
+        archiveCause: null,
+        archiveState: null,
+        archiveStateAt: null,
+        time: { created: 1, updated: 1, archived: null },
+      })
+
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
+      expect(row?.family_archive_id).toBeNull()
+      expect(row?.archive_cause).toBeNull()
+      expect(row?.archive_state).toBeNull()
+      expect(row?.archive_state_at).toBeNull()
+      expect(row?.time_archived).toBeNull()
+      expect(yield* db.select().from(SessionArchiveGuardTable).all()).toHaveLength(0)
+    }),
+  )
+
+  it.effect("session.created round-trips all family archive fields", () =>
+    Effect.gen(function* () {
+      const db = yield* seedProject
+      const events = yield* EventV2.Service
+
+      yield* events.publish(SessionV1.Event.Created, {
+        sessionID,
+        info: info({
+          familyArchiveID: sessionID,
+          archiveCause: "user",
+          archiveState: "archiving",
+          archiveStateAt: 2000,
+          time: { created: 1, updated: 1, archived: 1000 },
+        }),
+      })
+
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
+      expect(row?.family_archive_id).toBe(sessionID)
+      expect(row?.archive_cause).toBe("user")
+      expect(row?.archive_state).toBe("archiving")
+      expect(row?.archive_state_at).toBe(2000)
+      expect(row?.time_archived).toBe(1000)
     }),
   )
 })

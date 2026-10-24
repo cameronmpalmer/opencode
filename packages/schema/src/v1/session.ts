@@ -561,7 +561,7 @@ export const SessionInfo = Schema.Struct({
     created: NonNegativeInt,
     updated: NonNegativeInt,
     compacting: optional(NonNegativeInt),
-    archived: optional(Schema.Finite),
+    archived: optional(Schema.NullOr(Schema.Finite)),
   }),
   permission: optional(PermissionV1.Ruleset),
   revert: optional(SessionRevert),
