@@ -1215,7 +1215,9 @@ describe("EventV2", () => {
       )
 
       const committed = yield* Fiber.join(fiber)
-      expect(Array.from(committed).map((event) => event.data as unknown)).toEqual([durableData(aggregateID, "committed")])
+      expect(Array.from(committed).map((event) => event.data as unknown)).toEqual([
+        durableData(aggregateID, "committed"),
+      ])
     }),
   )
 
