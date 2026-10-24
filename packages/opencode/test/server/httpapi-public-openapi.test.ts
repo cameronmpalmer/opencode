@@ -6,12 +6,15 @@ type Method = "get" | "post" | "put" | "delete" | "patch"
 type OpenApiSchema = {
   readonly $ref?: string
   readonly anyOf?: ReadonlyArray<OpenApiSchema>
+  readonly oneOf?: ReadonlyArray<OpenApiSchema>
+  readonly allOf?: ReadonlyArray<OpenApiSchema>
   readonly type?: string
   readonly enum?: readonly unknown[]
   readonly properties?: Record<string, OpenApiSchema>
   readonly required?: readonly string[]
   readonly contentSchema?: OpenApiSchema
   readonly contentMediaType?: string
+  readonly items?: OpenApiSchema
 }
 type OpenApiResponse = {
   readonly description?: string
@@ -25,7 +28,10 @@ type OpenApiOperation = {
     readonly schema?: { readonly type?: string }
   }>
   readonly responses?: Record<string, OpenApiResponse>
-  readonly requestBody?: { readonly required?: boolean }
+  readonly requestBody?: {
+    readonly required?: boolean
+    readonly content?: Record<string, { readonly schema?: OpenApiSchema }>
+  }
   readonly security?: unknown
 }
 type OpenApiPathItem = Partial<Record<Method, OpenApiOperation>>
@@ -37,6 +43,28 @@ type OpenApiSpec = {
 const methods = ["get", "post", "put", "delete", "patch"] as const
 
 const allowedV2BuiltInEndpointErrors: string[] = []
+
+function flattenSchemaOptions(schema: OpenApiSchema | undefined): OpenApiSchema[] {
+  if (!schema) return []
+  const options = schema.anyOf ?? schema.oneOf
+  if (!options) return [schema]
+  return options.flatMap((item) => flattenSchemaOptions(item))
+}
+
+function isNullableSchema(schema: OpenApiSchema | undefined): boolean {
+  return flattenSchemaOptions(schema).some((item) => item.type === "null")
+}
+
+function hasDoubleNull(schema: OpenApiSchema): boolean {
+  const options = schema.anyOf ?? schema.oneOf
+  const flat = flattenSchemaOptions(schema)
+  if (flat.filter((item) => item.type === "null").length > 1) return true
+  if (options?.some(hasDoubleNull)) return true
+  if (schema.allOf?.some(hasDoubleNull)) return true
+  if (schema.properties && Object.values(schema.properties).some(hasDoubleNull)) return true
+  if (schema.items && hasDoubleNull(schema.items)) return true
+  return false
+}
 
 function v2Operations(spec: OpenApiSpec) {
   return Object.entries(spec.paths).flatMap(([path, item]) =>
@@ -346,5 +374,25 @@ describe("PublicApi OpenAPI v2 errors", () => {
     expect(componentName(responseRef(spec.paths["/project/{projectID}"]?.patch?.responses?.["404"]) ?? "")).toBe(
       "ProjectNotFoundError",
     )
+  })
+
+  test("keeps archive fields nullable without over-nullifying other optionals", () => {
+    const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
+
+    const update = spec.paths["/session/{sessionID}"]?.patch?.requestBody?.content?.["application/json"]?.schema
+    expect(isNullableSchema(update?.properties?.time?.properties?.archived)).toBe(true)
+
+    const session = spec.components.schemas.Session
+    expect(isNullableSchema(session?.properties?.time?.properties?.archived)).toBe(true)
+    for (const key of ["familyArchiveID", "archiveCause", "archiveState", "archiveStateAt"]) {
+      expect(isNullableSchema(session?.properties?.[key])).toBe(true)
+    }
+
+    expect(isNullableSchema(spec.components.schemas.OutputFormatJsonSchema?.properties?.retryCount)).toBe(false)
+    expect(isNullableSchema(spec.components.schemas.OutputFormat1?.properties?.retryCount)).toBe(false)
+
+    for (const schema of Object.values(spec.components.schemas)) {
+      expect(hasDoubleNull(schema)).toBe(false)
+    }
   })
 })

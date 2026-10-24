@@ -9920,14 +9920,7 @@
                   "branch": {
                     "anyOf": [
                       {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
+                        "type": "string"
                       },
                       {
                         "type": "null"
@@ -9936,14 +9929,7 @@
                   },
                   "extra": {
                     "anyOf": [
-                      {
-                        "anyOf": [
-                          {},
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
+                      {},
                       {
                         "type": "null"
                       }
@@ -16447,15 +16433,8 @@
             "$ref": "#/components/schemas/JSONSchema"
           },
           "retryCount": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "minimum": 0
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": "integer",
+            "minimum": 0
           }
         },
         "required": ["type", "schema"],
@@ -26476,15 +26455,8 @@
                 "$ref": "#/components/schemas/JSONSchema"
               },
               "retryCount": {
-                "anyOf": [
-                  {
-                    "type": "integer",
-                    "minimum": 0
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
+                "type": "integer",
+                "minimum": 0
               }
             },
             "required": ["type", "schema"],

@@ -235,7 +235,7 @@ export type JsonSchema = {
 export type OutputFormatJsonSchema = {
   type: "json_schema"
   schema: JsonSchema
-  retryCount?: number | null
+  retryCount?: number
 }
 
 export type OutputFormat = OutputFormatText | OutputFormatJsonSchema
@@ -3348,7 +3348,7 @@ export type OutputFormat1 =
   | {
       type: "json_schema"
       schema: JsonSchema
-      retryCount?: number | null
+      retryCount?: number
     }
 
 export type SessionStatus2 = {
@@ -11760,8 +11760,8 @@ export type ExperimentalWorkspaceCreateData = {
   body?: {
     id?: string
     type: string
-    branch?: string | null | null
-    extra?: unknown | null | null
+    branch?: string | null
+    extra?: unknown | null
   }
   path?: never
   query?: {

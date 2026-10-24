@@ -1055,8 +1055,8 @@ export class Workspace extends HeyApiClient {
       workspace?: string
       id?: string
       type?: string
-      branch?: string | null | null
-      extra?: unknown | null | null
+      branch?: string | null
+      extra?: unknown | null
     },
     options?: Options<never, ThrowOnError>,
   ) {

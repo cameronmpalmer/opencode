@@ -112,7 +112,10 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
         // Keep that SDK surface stable while the HttpApi spec is tightened.
         if (!isV2Api) delete operation.requestBody.required
         const body = operation.requestBody.content?.["application/json"]
-        if (body?.schema) body.schema = stripOptionalNull(structuredClone(body.schema))
+        if (body?.schema) {
+          body.schema = stripOptionalNull(structuredClone(body.schema))
+          restoreArchiveNulls(body.schema)
+        }
         if (path === "/experimental/workspace" && method === "post") {
           // Workspace creation fields `branch` and `extra` are Schema.NullOr —
           // genuinely nullable, not just optional. Re-add the null that the
@@ -140,7 +143,10 @@ function matchLegacyOpenApi(input: Record<string, unknown>) {
       }
       for (const response of Object.values(operation.responses ?? {})) {
         for (const content of Object.values(response.content ?? {})) {
-          if (content.schema) content.schema = stripOptionalNull(structuredClone(content.schema))
+          if (content.schema) {
+            content.schema = stripOptionalNull(structuredClone(content.schema))
+            restoreArchiveNulls(content.schema)
+          }
         }
       }
       if (!isV2Api) {
@@ -277,19 +283,30 @@ function applyLegacySchemaOverrides(spec: OpenApiSpec) {
   const syncInfo = schemas.SyncEventSessionUpdated?.properties?.data?.properties?.info
   if (syncInfo?.properties) makePropertiesNullable(syncInfo.properties)
 
-  // Family archive fields are intentionally nullable, not merely optional. The
-  // optional-null strip above flattens them to their non-null arm, so restore the
-  // null branch for every schema that exposes the archive surface.
-  for (const schema of Object.values(schemas)) {
-    const properties = schema.properties
-    const archived = properties?.time?.properties?.archived
-    if (!properties || !archived) continue
+  for (const schema of Object.values(schemas)) restoreArchiveNulls(schema)
+}
+
+/** Optional-nullable fields whose null branch must survive the legacy optional strip. */
+const ArchiveNullableProperties = ["familyArchiveID", "archiveCause", "archiveState", "archiveStateAt"] as const
+
+function restoreArchiveNulls(schema: OpenApiSchema): void {
+  if (schema.$ref) return
+  const properties = schema.properties
+  const archived = properties?.time?.properties?.archived
+  if (properties && archived) {
     properties.time!.properties!.archived = nullable(archived)
-    for (const key of ["familyArchiveID", "archiveCause", "archiveState", "archiveStateAt"]) {
+    for (const key of ArchiveNullableProperties) {
       const value = properties[key]
       if (value) properties[key] = nullable(value)
     }
   }
+  for (const value of Object.values(properties ?? {})) restoreArchiveNulls(value)
+  for (const item of schema.anyOf ?? []) restoreArchiveNulls(item)
+  for (const item of schema.oneOf ?? []) restoreArchiveNulls(item)
+  for (const item of schema.allOf ?? []) restoreArchiveNulls(item)
+  if (schema.items) restoreArchiveNulls(schema.items)
+  const additional = schema.additionalProperties
+  if (additional && typeof additional === "object") restoreArchiveNulls(additional)
 }
 
 function normalizeComponentDescriptions(spec: OpenApiSpec) {
@@ -479,22 +496,6 @@ function stripOptionalNull(schema: OpenApiSchema): OpenApiSchema {
     return stripOptionalNull({ ...schema, ...constraint })
   }
   if (isEmptyObjectUnion(schema)) return { type: "object", properties: {} }
-  // `Schema.optional(Schema.NullOr(X))` generates one nested nullable union plus an
-  // outer null arm. Drop only the outer arm and keep the explicit nullable union so
-  // intentionally nullable API fields survive into the generated SDK.
-  const explicit = schema.anyOf ?? schema.oneOf
-  if (explicit?.length === 2) {
-    const nullArm = explicit.find((item) => item.type === "null")
-    const other = explicit.find((item) => item.type !== "null")
-    const inner = other?.anyOf ?? other?.oneOf
-    if (nullArm && inner?.some((item) => item.type === "null")) {
-      return {
-        ...schema,
-        ...(schema.oneOf ? { oneOf: undefined } : {}),
-        anyOf: inner.map((item) => (item.type === "null" ? item : stripOptionalNull(item))),
-      }
-    }
-  }
   const options = flattenOptions(schema.anyOf ?? schema.oneOf)
   if (options) {
     const withoutNull = options.filter((item) => item.type !== "null")
