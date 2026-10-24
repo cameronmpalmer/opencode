@@ -1231,6 +1231,35 @@ const scenarios: Scenario[] = [
       }),
     ),
   http.protected
+    .get("/session/{sessionID}/archive-preview", "session.archivePreview")
+    .seeded((ctx) => ctx.session({ title: "Archive preview" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/archive-preview", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .status(404),
+  http.protected
+    .post("/session/{sessionID}/archive", "session.archive")
+    .seeded((ctx) => ctx.session({ title: "Archive family" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/archive", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .status(404),
+  http.protected
+    .post("/session/{sessionID}/unarchive", "session.unarchive")
+    .seeded((ctx) => ctx.session({ title: "Unarchive family" }))
+    .at((ctx) => ({
+      path: route("/session/{sessionID}/unarchive", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body, ctx) => {
+      object(body)
+      check(body.root_id === ctx.state.id, "unarchive should name the requested root")
+      array(body.restored_ids)
+      array(body.still_archived_ids)
+    }),
+  http.protected
     .get("/session/{sessionID}/children", "session.children")
     .seeded((ctx) =>
       Effect.gen(function* () {

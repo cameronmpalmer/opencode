@@ -245,7 +245,7 @@ export type SessionsListOutput = {
       readonly reasoning: number
       readonly cache: { readonly read: number; readonly write: number }
     }
-    readonly time: { readonly created: number; readonly updated: number; readonly archived?: number }
+    readonly time: { readonly created: number; readonly updated: number; readonly archived?: number | null }
     readonly title: string
     readonly location: { readonly directory: string; readonly workspaceID?: string }
     readonly subpath?: string
@@ -262,6 +262,10 @@ export type SessionsListOutput = {
         readonly patch: string
       }>
     }
+    readonly familyArchiveID?: string | null
+    readonly archiveCause?: "user" | "cascade" | "migration" | null
+    readonly archiveState?: "archiving" | null
+    readonly archiveStateAt?: number | null
   }>
   readonly cursor: { readonly previous?: string | null; readonly next?: string | null }
 }
@@ -307,7 +311,7 @@ export type SessionsCreateOutput = {
       readonly reasoning: number
       readonly cache: { readonly read: number; readonly write: number }
     }
-    readonly time: { readonly created: number; readonly updated: number; readonly archived?: number }
+    readonly time: { readonly created: number; readonly updated: number; readonly archived?: number | null }
     readonly title: string
     readonly location: { readonly directory: string; readonly workspaceID?: string }
     readonly subpath?: string
@@ -324,6 +328,10 @@ export type SessionsCreateOutput = {
         readonly patch: string
       }>
     }
+    readonly familyArchiveID?: string | null
+    readonly archiveCause?: "user" | "cascade" | "migration" | null
+    readonly archiveState?: "archiving" | null
+    readonly archiveStateAt?: number | null
   }
 }["data"]
 
@@ -345,7 +353,7 @@ export type SessionsGetOutput = {
       readonly reasoning: number
       readonly cache: { readonly read: number; readonly write: number }
     }
-    readonly time: { readonly created: number; readonly updated: number; readonly archived?: number }
+    readonly time: { readonly created: number; readonly updated: number; readonly archived?: number | null }
     readonly title: string
     readonly location: { readonly directory: string; readonly workspaceID?: string }
     readonly subpath?: string
@@ -362,6 +370,10 @@ export type SessionsGetOutput = {
         readonly patch: string
       }>
     }
+    readonly familyArchiveID?: string | null
+    readonly archiveCause?: "user" | "cascade" | "migration" | null
+    readonly archiveState?: "archiving" | null
+    readonly archiveStateAt?: number | null
   }
 }["data"]
 
