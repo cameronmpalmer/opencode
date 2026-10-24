@@ -2,7 +2,7 @@ import { describe, expect } from "bun:test"
 import { Project } from "@/project/project"
 import { Database } from "@opencode-ai/core/database/database"
 import { eq } from "drizzle-orm"
-import { SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionImportExemptTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { ProjectV2 } from "@opencode-ai/core/project"
@@ -116,6 +116,42 @@ describe("migrateFromGlobal", () => {
       )
       expect(row).toBeDefined()
       expect(row!.project_id).toBe(project.id)
+    }),
+  )
+
+  it.live("migrates an archived global session without failing project resolution", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped({ git: true })
+      const projects = yield* Project.Service
+      const { project } = yield* projects.fromDirectory(tmp)
+      yield* ensureGlobal()
+
+      const id = legacySessionID()
+      const { db } = yield* Database.Service
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id,
+          project_id: ProjectV2.ID.global,
+          slug: id,
+          directory: tmp,
+          title: "archived",
+          version: "0.0.0-test",
+          time_created: Date.now(),
+          time_updated: Date.now(),
+          time_archived: 9_999,
+          family_archive_id: id,
+          archive_cause: "user",
+        })
+        .run()
+        .pipe(Effect.orDie)
+
+      yield* projects.fromDirectory(tmp)
+
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, id)).get().pipe(Effect.orDie)
+      expect(row?.project_id).toBe(project.id)
+      expect(row?.time_archived).toBe(9_999)
+      expect(yield* db.select().from(SessionImportExemptTable).all().pipe(Effect.orDie)).toEqual([])
     }),
   )
 

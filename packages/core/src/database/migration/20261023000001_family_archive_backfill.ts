@@ -110,7 +110,7 @@ export default {
           -- changing non-archive state.
           SELECT CASE WHEN (NEW.time_archived IS NOT NULL OR NEW.archive_state = 'archiving')
             AND OLD.time_archived IS NULL
-            AND COALESCE(OLD.archive_state, '') <> 'archiving' 
+            AND COALESCE(OLD.archive_state, '') <> 'archiving'
             AND NOT EXISTS (
               SELECT 1 FROM \`session_import_exempt\` e
               WHERE e.session_id = NEW.id AND e.expires_at > ${now}
@@ -180,8 +180,17 @@ export default {
         END;
       `)
 
-      // Parts resolve their session through the message row, never through
-      // NEW.session_id. A missing message is not a writable target.
+      // Parts resolve authority through the message row, but a mismatched
+      // archived session_id is also rejected. A missing message is not writable.
+      const archivedSession = (session: string) => `
+        SELECT 1 FROM \`session\` s
+        WHERE s.id = ${session}
+          AND (s.time_archived IS NOT NULL OR s.archive_state = 'archiving')
+          AND NOT EXISTS (
+            SELECT 1 FROM \`session_import_exempt\` e
+            WHERE e.session_id = s.id AND e.expires_at > ${now}
+          )
+      `
       const writablePartMessage = (message: string) => `
         SELECT 1 FROM \`message\` m
         JOIN \`session\` s ON s.id = m.session_id
@@ -198,6 +207,7 @@ export default {
         CREATE TRIGGER \`part_family_archive_insert\`
         BEFORE INSERT ON \`part\`
         WHEN NOT EXISTS (${writablePartMessage("NEW.message_id")})
+          OR EXISTS (${archivedSession("NEW.session_id")})
         BEGIN
           SELECT RAISE(ABORT, 'SessionArchivedError: cannot write parts to an archived session');
         END;
@@ -207,6 +217,8 @@ export default {
         BEFORE UPDATE ON \`part\`
         WHEN NOT EXISTS (${writablePartMessage("OLD.message_id")})
           OR NOT EXISTS (${writablePartMessage("NEW.message_id")})
+          OR EXISTS (${archivedSession("OLD.session_id")})
+          OR EXISTS (${archivedSession("NEW.session_id")})
         BEGIN
           SELECT RAISE(ABORT, 'SessionArchivedError: cannot write parts to an archived session');
         END;
@@ -227,7 +239,7 @@ export default {
               )
           )
           BEGIN
-            SELECT RAISE(ABORT, 'SessionArchivedError: cannot write to an archived session');
+            SELECT RAISE(ABORT, 'SessionArchivedError: cannot write to an archived session (${table})');
           END;
         `)
         yield* tx.run(`
@@ -252,7 +264,7 @@ export default {
                 )
             )
           BEGIN
-            SELECT RAISE(ABORT, 'SessionArchivedError: cannot write to an archived session');
+            SELECT RAISE(ABORT, 'SessionArchivedError: cannot write to an archived session (${table})');
           END;
         `)
       }

@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test"
 import { SqliteClient } from "@effect/sql-sqlite-bun"
 import { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
 import { Cause, Effect, Exit } from "effect"
-import { sql } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { DatabaseMigration } from "@opencode-ai/core/database/migration"
+import { SessionSchema } from "@opencode-ai/core/session/schema"
+import { SessionTable } from "@opencode-ai/core/session/sql"
 import type { SqlClient as SqlClientService } from "effect/unstable/sql/SqlClient"
 
 const run = <A, E>(effect: Effect.Effect<A, E, SqlClientService>) =>
@@ -156,6 +158,7 @@ describe("family archive triggers", () => {
         yield* addSession(db, "archived")
         yield* addSession(db, "archiving")
         yield* addSession(db, "active")
+        yield* addSession(db, "active2")
         yield* addMessage(db, "msg_active", "active")
         yield* addMessage(db, "msg_archived", "archived")
         yield* addMessage(db, "msg_archiving", "archiving")
@@ -168,12 +171,13 @@ describe("family archive triggers", () => {
         yield* expectAbort(addPart(db, "part_blocked_archiving", "msg_archiving", "active"))
         yield* expectAbort(addPart(db, "part_missing", "msg_missing", "active"))
 
-        // The part's own session_id is ignored; the message session decides.
-        yield* addPart(db, "part_crossed", "msg_active", "archived")
-        expect(yield* count(db, "part")).toBe(1)
-
         // A live message under an archived part.session_id is still blocked.
+        yield* expectAbort(addPart(db, "part_crossed", "msg_active", "archived"))
         yield* expectAbort(addPart(db, "part_wrong_way", "msg_archived", "active"))
+
+        // A live message and live session mismatch is allowed; message_id stays authoritative.
+        yield* addPart(db, "part_live_mismatch", "msg_active", "active2")
+        expect(yield* count(db, "part")).toBe(1)
       }),
     )
   })
@@ -235,6 +239,8 @@ describe("family archive triggers", () => {
           sql`UPDATE message SET session_id = 'archived' WHERE id = 'msg_active'`,
           sql`UPDATE session_input SET session_id = 'fresh' WHERE id = 'in_archived'`,
           sql`UPDATE session_input SET session_id = 'archived' WHERE id = 'in_active'`,
+          sql`UPDATE part SET session_id = 'fresh' WHERE id = 'part_archived'`,
+          sql`UPDATE part SET session_id = 'archived' WHERE id = 'part_active'`,
           sql`UPDATE session_message SET session_id = 'fresh' WHERE id = 'sm_archived'`,
           sql`UPDATE session_message SET session_id = 'archived' WHERE id = 'sm_active'`,
           sql`UPDATE todo SET session_id = 'fresh' WHERE session_id = 'archived' AND position = 1`,
@@ -309,6 +315,27 @@ describe("family archive triggers", () => {
       Effect.gen(function* () {
         const db = yield* setup
         yield* addSession(db, "root")
+        yield* db
+          .run(
+            sql`
+            UPDATE session SET
+              summary_additions = 3,
+              summary_deletions = 4,
+              summary_files = 5,
+              summary_diffs = '[]',
+              metadata = '{"key":"value"}',
+              share_url = 'https://example.com/session',
+              permission = '[]',
+              cost = 1.5,
+              tokens_input = 10,
+              tokens_output = 11,
+              tokens_reasoning = 12,
+              tokens_cache_read = 13,
+              tokens_cache_write = 14
+            WHERE id = 'root'
+          `,
+          )
+          .pipe(Effect.orDie)
         yield* archive(db, "root")
 
         yield* db.run(sql`INSERT INTO session_archive_guard (session_id) VALUES ('root')`).pipe(Effect.orDie)
@@ -359,11 +386,58 @@ describe("family archive triggers", () => {
 
         // The guard remains present on purpose: it authorizes archive-field
         // transitions only, never arbitrary non-archive changes.
-        yield* expectAbort(db.run(sql`UPDATE session SET summary_files = 5 WHERE id = 'root'`))
+        yield* expectAbort(db.run(sql`UPDATE session SET summary_files = 6 WHERE id = 'root'`))
         yield* expectAbort(db.run(sql`UPDATE session SET parent_id = 'other' WHERE id = 'root'`))
         yield* expectAbort(db.run(sql`UPDATE session SET title = 'changed' WHERE id = 'root'`))
         yield* expectAbort(db.run(sql`UPDATE session SET id = 'renamed' WHERE id = 'root'`))
         yield* expectAbort(db.run(sql`UPDATE session SET metadata = '{"changed":true}' WHERE id = 'root'`))
+      }),
+    )
+  })
+
+  test("every session column is protected by the update trigger", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* setup
+        const columns = yield* db.all<{ name: string }>(sql`PRAGMA table_info(session)`)
+        const archiveColumns = new Set([
+          "time_archived",
+          "family_archive_id",
+          "archive_cause",
+          "archive_state",
+          "archive_state_at",
+        ])
+        const trigger = yield* db.get<{ sql: string }>(
+          sql`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'session_family_archive_update'`,
+        )
+        expect(trigger?.sql).toBeDefined()
+        for (const { name } of columns) {
+          if (archiveColumns.has(name)) continue
+          expect(trigger!.sql).toContain(`NEW.${name}`)
+          expect(trigger!.sql).toContain(`OLD.${name}`)
+        }
+      }),
+    )
+  })
+
+  test("a Drizzle update of archive fields bumps time_updated and aborts on an archived row", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* setup
+        yield* addSession(db, "ses_root")
+        yield* archive(db, "ses_root")
+        yield* db.run(sql`INSERT INTO session_archive_guard (session_id) VALUES ('ses_root')`).pipe(Effect.orDie)
+
+        // Timestamps.time_updated uses $onUpdate(Date.now()), so a plain Drizzle
+        // set bumps a non-archive column and must abort.
+        yield* expectAbort(
+          db
+            .update(SessionTable)
+            .set({ time_archived: 2000 })
+            .where(eq(SessionTable.id, SessionSchema.ID.make("ses_root")))
+            .run(),
+        )
+        yield* db.run(sql`DELETE FROM session_archive_guard WHERE session_id = 'ses_root'`).pipe(Effect.orDie)
       }),
     )
   })

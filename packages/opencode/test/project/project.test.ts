@@ -6,7 +6,7 @@ import { tmpdirScoped } from "../fixture/fixture"
 import { GlobalBus } from "../../src/bus/global"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
-import { SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionImportExemptTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { WorkspaceTable } from "@opencode-ai/core/control-plane/workspace.sql"
 import { eq } from "drizzle-orm"
 import { Hash } from "@opencode-ai/core/util/hash"
@@ -195,20 +195,36 @@ describe("Project.fromDirectory", () => {
       const rootProject = rootResult.project
       const remoteID = remoteProjectID("github.com/acme/app")
       const sessionID = crypto.randomUUID() as SessionID
+      const archivedSessionID = crypto.randomUUID() as SessionID
       const workspaceID = WorkspaceV2.ID.ascending()
 
       yield* db
         .insert(SessionTable)
-        .values({
-          id: sessionID,
-          project_id: rootProject.id,
-          slug: sessionID,
-          directory: tmp,
-          title: "test",
-          version: "0.0.0-test",
-          time_created: Date.now(),
-          time_updated: Date.now(),
-        })
+        .values([
+          {
+            id: sessionID,
+            project_id: rootProject.id,
+            slug: sessionID,
+            directory: tmp,
+            title: "test",
+            version: "0.0.0-test",
+            time_created: Date.now(),
+            time_updated: Date.now(),
+          },
+          {
+            id: archivedSessionID,
+            project_id: rootProject.id,
+            slug: archivedSessionID,
+            directory: tmp,
+            title: "archived",
+            version: "0.0.0-test",
+            time_created: Date.now(),
+            time_updated: Date.now(),
+            time_archived: 9_999,
+            family_archive_id: archivedSessionID,
+            archive_cause: "user",
+          },
+        ])
         .run()
         .pipe(Effect.orDie)
       yield* db
@@ -228,6 +244,15 @@ describe("Project.fromDirectory", () => {
         (yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie))
           ?.project_id,
       ).toBe(remoteID)
+      const archived = yield* db
+        .select()
+        .from(SessionTable)
+        .where(eq(SessionTable.id, archivedSessionID))
+        .get()
+        .pipe(Effect.orDie)
+      expect(archived?.project_id).toBe(remoteID)
+      expect(archived?.time_archived).toBe(9_999)
+      expect(yield* db.select().from(SessionImportExemptTable).all().pipe(Effect.orDie)).toEqual([])
       expect(
         (yield* db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, workspaceID)).get().pipe(Effect.orDie))
           ?.project_id,

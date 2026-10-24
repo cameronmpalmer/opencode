@@ -495,6 +495,119 @@ describe("family archive projector", () => {
     }),
   )
 
+  it.effect("rejects moving a session under an archived ancestor without journaling the event", () =>
+    Effect.gen(function* () {
+      const db = yield* seedProject
+      const parent = SessionSchema.ID.make("ses_archived_parent")
+      const mover = SessionSchema.ID.make("ses_mover")
+      yield* db
+        .insert(SessionTable)
+        .values([
+          {
+            id: parent,
+            project_id: projectID,
+            slug: "parent",
+            directory: "/project",
+            title: "parent",
+            version: "test",
+            time_created: 1,
+            time_updated: 1,
+            time_archived: 1000,
+            family_archive_id: parent,
+            archive_cause: "user",
+          },
+          {
+            id: mover,
+            project_id: projectID,
+            slug: "mover",
+            directory: "/project",
+            title: "mover",
+            version: "test",
+            time_created: 1,
+            time_updated: 1,
+          },
+        ])
+        .run()
+      const events = yield* EventV2.Service
+
+      const exit = yield* events
+        .publish(SessionV1.Event.Updated, {
+          sessionID: mover,
+          info: info({ id: mover, parentID: parent }),
+        })
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      expect(exit.cause.reasons.find(Cause.isDieReason)?.defect).toBeInstanceOf(SessionArchivedError)
+      expect(
+        (yield* db
+          .select({ parent_id: SessionTable.parent_id })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, mover))
+          .get())?.parent_id,
+      ).toBeNull()
+      expect(yield* db.select().from(EventTable).all()).toHaveLength(0)
+      expect(yield* db.select().from(EventSequenceTable).all()).toHaveLength(0)
+    }),
+  )
+
+  it.effect("rejects archiving a live session together with a non-archive change", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow()
+      yield* db.insert(SessionArchiveGuardTable).values({ session_id: sessionID }).run()
+      const events = yield* EventV2.Service
+
+      const exit = yield* events
+        .publish(SessionV1.Event.Updated, {
+          sessionID,
+          info: info({
+            title: "changed",
+            familyArchiveID: sessionID,
+            archiveCause: "user",
+            time: { created: 1, updated: 1, archived: 1000 },
+          }),
+        })
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      expect(exit.cause.reasons.find(Cause.isDieReason)?.defect).toBeInstanceOf(SessionArchivedError)
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
+      expect(row?.title).toBe("old title")
+      expect(row?.time_archived).toBeNull()
+      expect(yield* db.select().from(EventTable).all()).toHaveLength(0)
+      expect(yield* db.select().from(EventSequenceTable).all()).toHaveLength(0)
+    }),
+  )
+
+  it.effect("rejects a part update whose message row is missing", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow()
+      const events = yield* EventV2.Service
+
+      const exit = yield* events
+        .publish(SessionV1.Event.PartUpdated, {
+          sessionID,
+          time: 1,
+          part: {
+            id: SessionV1.PartID.make("prt_missing_message"),
+            sessionID,
+            messageID: SessionV1.MessageID.make("msg_missing"),
+            type: "text",
+            text: "hello",
+          },
+        })
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      expect(exit.cause.reasons.find(Cause.isDieReason)?.defect).toBeInstanceOf(SessionArchivedError)
+      expect(yield* db.select().from(EventTable).all()).toHaveLength(0)
+      expect(yield* db.select().from(EventSequenceTable).all()).toHaveLength(0)
+    }),
+  )
+
   it.effect("rejects session.created under an archived ancestor without journaling the event", () =>
     Effect.gen(function* () {
       const db = yield* seedProject

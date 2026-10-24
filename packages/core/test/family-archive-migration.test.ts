@@ -93,6 +93,11 @@ const assertFamilyArchiveSchema = (db: Db) =>
     ])
   })
 
+const triggerNames = (db: Db) =>
+  db
+    .all<{ name: string }>(sql`SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name`)
+    .pipe(Effect.orDie, Effect.map((rows) => rows.map((row) => row.name)))
+
 describe("family archive migrations", () => {
   test("family archive columns, tables, and indexes exist on a fresh database", async () => {
     await run(
@@ -140,6 +145,40 @@ describe("family archive migrations", () => {
           familyArchiveMigration.id,
           familyArchiveBackfillMigration.id,
         ])
+      }),
+    )
+  })
+
+  test("installs every archive trigger and applying the migrations twice is a journal-gated no-op", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+
+        const expected = [
+          "message_family_archive_insert",
+          "message_family_archive_update",
+          "part_family_archive_insert",
+          "part_family_archive_update",
+          "session_context_epoch_family_archive_insert",
+          "session_context_epoch_family_archive_update",
+          "session_family_archive_insert",
+          "session_family_archive_update",
+          "session_input_family_archive_insert",
+          "session_input_family_archive_update",
+          "session_message_family_archive_insert",
+          "session_message_family_archive_update",
+          "session_share_family_archive_insert",
+          "session_share_family_archive_update",
+          "todo_family_archive_insert",
+          "todo_family_archive_update",
+        ]
+        expect(yield* triggerNames(db)).toEqual(expected)
+
+        yield* DatabaseMigration.apply(db)
+        expect(yield* triggerNames(db)).toEqual(expected)
+        const journal = yield* db.all<{ n: number }>(sql`SELECT COUNT(*) AS n FROM migration WHERE id LIKE '20261023%'`)
+        expect(journal[0]?.n).toBe(2)
       }),
     )
   })

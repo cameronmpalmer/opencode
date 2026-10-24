@@ -185,6 +185,13 @@ function assertSessionWritable(db: DatabaseService, sessionID: SessionID) {
   })
 }
 
+function nonArchiveProjectionChanged(row: Record<string, unknown>, projected: Record<string, unknown>): boolean {
+  return Object.keys(projected).some((key) => {
+    if ((archiveFields as readonly string[]).includes(key)) return false
+    return !isDeepStrictEqual(canonical(row[key]), canonical(projected[key]))
+  })
+}
+
 function archivedAncestor(db: DatabaseService, parentID: SessionID) {
   return db
     .all<{ id: string }>(
@@ -240,9 +247,9 @@ function applyUsage(
     .pipe(Effect.orDie)
 }
 
-function run(db: DatabaseService, event: SessionEvent.Event) {
+function run(db: DatabaseService, event: SessionEvent.Event, checked = false) {
   return Effect.gen(function* () {
-    yield* assertSessionWritable(db, event.data.sessionID)
+    if (!checked) yield* assertSessionWritable(db, event.data.sessionID)
     const decodeRow = (row: typeof SessionMessageTable.$inferSelect) =>
       decodeMessage({ ...row.data, id: row.id, type: row.type })
     const updateMessage = (message: SessionMessage.Message) => {
@@ -381,7 +388,11 @@ const layer = Layer.effectDiscard(
         const set = sessionUpdate(event.data.info)
         const changedArchiveFields = presentedArchiveFields(set)
         const status = yield* db
-          .select({ time_archived: SessionTable.time_archived, archive_state: SessionTable.archive_state })
+          .select({
+            time_archived: SessionTable.time_archived,
+            archive_state: SessionTable.archive_state,
+            parent_id: SessionTable.parent_id,
+          })
           .from(SessionTable)
           .where(eq(SessionTable.id, event.data.sessionID))
           .get()
@@ -414,18 +425,34 @@ const layer = Layer.effectDiscard(
             }
           }
         }
-        if (current && archived) {
+        if (current) {
           const row = current as Record<string, unknown>
           const projected = set as Record<string, unknown>
-          const changed = Object.keys(projected).some((key) => {
-            if ((archiveFields as readonly string[]).includes(key)) return false
-            return !isDeepStrictEqual(canonical(row[key]), canonical(projected[key]))
-          })
-          if (changed) {
+          const nonArchiveChanged = nonArchiveProjectionChanged(row, projected)
+          const nextArchived =
+            (set.time_archived !== undefined && set.time_archived !== null) || set.archive_state === "archiving"
+          if ((archived && nonArchiveChanged) || (!archived && nextArchived && nonArchiveChanged)) {
             return yield* Effect.die(
               new SessionArchivedError({
                 sessionID: event.data.sessionID,
                 message: `Archived session ${event.data.sessionID} rejects non-archive updates`,
+              }),
+            )
+          }
+        }
+        if (
+          status &&
+          set.parent_id !== undefined &&
+          !isDeepStrictEqual(status.parent_id ?? null, set.parent_id ?? null)
+        ) {
+          const blocked =
+            (status.parent_id ? (yield* archivedAncestor(db, status.parent_id)).length > 0 : false) ||
+            (set.parent_id ? (yield* archivedAncestor(db, set.parent_id)).length > 0 : false)
+          if (blocked) {
+            return yield* Effect.die(
+              new SessionArchivedError({
+                sessionID: event.data.sessionID,
+                message: `Cannot move session ${event.data.sessionID} into or out of an archived family`,
               }),
             )
           }
@@ -520,7 +547,15 @@ const layer = Layer.effectDiscard(
           .where(eq(MessageTable.id, event.data.part.messageID))
           .get()
           .pipe(Effect.orDie)
-        yield* assertSessionWritable(db, owner?.session_id ?? event.data.part.sessionID)
+        if (!owner) {
+          return yield* Effect.die(
+            new SessionArchivedError({
+              sessionID: event.data.part.sessionID,
+              message: `Part ${event.data.part.id} references missing message ${event.data.part.messageID}`,
+            }),
+          )
+        }
+        yield* assertSessionWritable(db, owner.session_id)
         const id = event.data.part.id
         const messageID = event.data.part.messageID
         const sessionID = event.data.part.sessionID
@@ -547,7 +582,7 @@ const layer = Layer.effectDiscard(
           .where(eq(SessionTable.id, event.data.sessionID))
           .run()
           .pipe(Effect.orDie)
-        yield* run(db, event)
+        yield* run(db, event, true)
       }),
     )
     yield* events.project(SessionEvent.ModelSwitched, (event) =>
@@ -559,7 +594,7 @@ const layer = Layer.effectDiscard(
           .where(eq(SessionTable.id, event.data.sessionID))
           .run()
           .pipe(Effect.orDie)
-        yield* run(db, event)
+        yield* run(db, event, true)
       }),
     )
     yield* events.project(SessionEvent.Prompted, (event) =>
@@ -574,7 +609,7 @@ const layer = Layer.effectDiscard(
           timeCreated: event.data.timestamp,
           promotedSeq: event.durable.seq,
         })
-        yield* run(db, event)
+        yield* run(db, event, true)
       }),
     )
     yield* events.project(SessionEvent.PromptAdmitted, (event) =>

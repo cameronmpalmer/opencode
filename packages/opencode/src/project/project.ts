@@ -174,11 +174,31 @@ const layer = Layer.effect(
               // accuracy
               yield* d.delete(ProjectDirectoryTable).where(eq(ProjectDirectoryTable.project_id, oldID)).run()
 
+              // Archived rows reject non-archive updates. Relocate them under a
+              // short-lived import exemption so project resolution keeps working.
+              const exempt = yield* d.all<{ id: string }>(sql`
+                SELECT id FROM session
+                WHERE project_id = ${oldID}
+                  AND (time_archived IS NOT NULL OR archive_state = 'archiving')
+              `)
+              const expiresAt = Date.now() + 60_000
+              for (const row of exempt) {
+                yield* d.run(sql`
+                  INSERT INTO session_import_exempt (session_id, expires_at)
+                  VALUES (${row.id}, ${expiresAt})
+                  ON CONFLICT(session_id) DO UPDATE SET expires_at = excluded.expires_at
+                `)
+              }
+
               yield* d
                 .update(SessionTable)
                 .set({ project_id: newID, time_updated: sql`${SessionTable.time_updated}` })
                 .where(eq(SessionTable.project_id, oldID))
                 .run()
+
+              for (const row of exempt) {
+                yield* d.run(sql`DELETE FROM session_import_exempt WHERE session_id = ${row.id}`)
+              }
               yield* d
                 .update(WorkspaceTable)
                 .set({ project_id: newID })
@@ -290,10 +310,38 @@ const layer = Layer.effect(
 
       if (projectID !== ProjectV2.ID.global) {
         yield* db
-          .update(SessionTable)
-          .set({ project_id: projectID })
-          .where(and(eq(SessionTable.project_id, ProjectV2.ID.global), eq(SessionTable.directory, data.directory)))
-          .run()
+          .transaction(
+            (d) =>
+              Effect.gen(function* () {
+                const where = and(
+                  eq(SessionTable.project_id, ProjectV2.ID.global),
+                  eq(SessionTable.directory, data.directory),
+                )
+                const exempt = yield* d.all<{ id: string }>(sql`
+                  SELECT id FROM session
+                  WHERE project_id = ${ProjectV2.ID.global}
+                    AND directory = ${data.directory}
+                    AND (time_archived IS NOT NULL OR archive_state = 'archiving')
+                `)
+                const expiresAt = Date.now() + 60_000
+                for (const row of exempt) {
+                  yield* d.run(sql`
+                    INSERT INTO session_import_exempt (session_id, expires_at)
+                    VALUES (${row.id}, ${expiresAt})
+                    ON CONFLICT(session_id) DO UPDATE SET expires_at = excluded.expires_at
+                  `)
+                }
+                yield* d
+                  .update(SessionTable)
+                  .set({ project_id: projectID, time_updated: sql`${SessionTable.time_updated}` })
+                  .where(where)
+                  .run()
+                for (const row of exempt) {
+                  yield* d.run(sql`DELETE FROM session_import_exempt WHERE session_id = ${row.id}`)
+                }
+              }),
+            { behavior: "immediate" },
+          )
           .pipe(Effect.orDie)
       }
 
