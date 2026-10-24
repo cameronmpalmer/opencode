@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Cause, Effect, Exit } from "effect"
+import { Cause, Effect, Exit, Logger } from "effect"
 import { eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -386,14 +386,53 @@ describe("family archive projector", () => {
         archiveCause: "cascade",
         archiveState: null,
         archiveStateAt: null,
-        time: { created: 1, updated: 2, archived: 1000 },
+        time: { created: 1, updated: 1, archived: 1000 },
       })
 
       const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
       expect(row?.time_archived).toBe(1000)
       expect(row?.family_archive_id).toBe(sessionID)
       expect(row?.archive_cause).toBe("cascade")
-      expect(row?.time_updated).toBe(2)
+      expect(row?.time_updated).toBe(1)
+    }),
+  )
+
+  it.effect("rejects a non-archive session.updated on an archived row even with a guard and logs once", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow({
+        time_archived: 1000,
+        family_archive_id: sessionID,
+        archive_cause: "cascade",
+      })
+      yield* db.insert(SessionArchiveGuardTable).values({ session_id: sessionID }).run()
+      const events = yield* EventV2.Service
+      const messages: Array<unknown> = []
+      const logger = Logger.make((options) => messages.push(options.message))
+
+      const exit = yield* events
+        .publish(
+          SessionV1.Event.Updated,
+          {
+            sessionID,
+            info: info({ title: "changed", familyArchiveID: sessionID, time: { created: 1, updated: 1 } }),
+          },
+          { id: EventV2.ID.make("evt_archived_update") },
+        )
+        .pipe(Effect.provide(Logger.layer([logger])), Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      expect(exit.cause.reasons.find(Cause.isDieReason)?.defect).toBeInstanceOf(SessionArchivedError)
+      expect(yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()).toMatchObject({
+        title: "old title",
+        time_archived: 1000,
+      })
+      expect(yield* db.select().from(EventTable).all()).toHaveLength(0)
+      expect(yield* db.select().from(EventSequenceTable).all()).toHaveLength(0)
+      const logged = JSON.stringify(messages)
+      expect(logged).toContain("evt_archived_update")
+      expect(logged).toContain("session.updated")
+      expect(logged).toContain(sessionID)
     }),
   )
 

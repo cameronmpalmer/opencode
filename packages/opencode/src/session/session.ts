@@ -647,7 +647,6 @@ const layer: Layer.Layer<
           updated: Date.now(),
         },
       }
-      yield* Effect.logInfo("created", result)
 
       if (result.parentID) {
         // Cheap fail-fast check. The database trigger remains the correctness boundary.
@@ -679,6 +678,7 @@ const layer: Layer.Layer<
         }
       }
 
+      yield* Effect.logInfo("created", result)
       yield* events.publish(SessionV1.Event.Created, { sessionID: result.id, info: result })
 
       return result

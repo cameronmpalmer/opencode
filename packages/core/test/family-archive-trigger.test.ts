@@ -49,7 +49,7 @@ const archive = (db: Db, id: string, values: { cause?: string; state?: string | 
       .run(
         sql`
         UPDATE session SET
-          time_archived = ${values.at ?? 1000},
+          time_archived = ${values.at === undefined ? 1000 : values.at},
           family_archive_id = ${id},
           archive_cause = ${values.cause ?? "cascade"},
           archive_state = ${values.state ?? null},
@@ -92,6 +92,35 @@ const count = (db: Db, table: string) =>
     Effect.map((row) => row?.n ?? 0),
   )
 
+const seedScopedRows = (db: Db, id: string) =>
+  Effect.gen(function* () {
+    yield* db
+      .run(
+        sql`INSERT INTO session_input (id, session_id, prompt, delivery, admitted_seq, time_created) VALUES (${`in_${id}`}, ${id}, 'p', 'steer', 1, 1)`,
+      )
+      .pipe(Effect.orDie)
+    yield* db
+      .run(
+        sql`INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES (${`sm_${id}`}, ${id}, 'user', 1, 1, 1, '{}')`,
+      )
+      .pipe(Effect.orDie)
+    yield* db
+      .run(
+        sql`INSERT INTO todo (session_id, content, status, priority, position, time_created, time_updated) VALUES (${id}, 'c', 'pending', 'low', 1, 1, 1)`,
+      )
+      .pipe(Effect.orDie)
+    yield* db
+      .run(
+        sql`INSERT INTO session_context_epoch (session_id, baseline, snapshot, baseline_seq) VALUES (${id}, '{}', '{}', 1)`,
+      )
+      .pipe(Effect.orDie)
+    yield* db
+      .run(
+        sql`INSERT INTO session_share (session_id, id, secret, url, time_created, time_updated) VALUES (${id}, ${`s_${id}`}, 'x', 'u', 1, 1)`,
+      )
+      .pipe(Effect.orDie)
+  })
+
 describe("family archive triggers", () => {
   test("rejects child inserts under archived roots, deeper archived ancestors, and archiving parents", async () => {
     await run(
@@ -106,6 +135,11 @@ describe("family archive triggers", () => {
 
         yield* addSession(db, "archiving")
         yield* archive(db, "archiving", { at: null, state: "archiving" })
+        expect(
+          yield* db.get<{ time_archived: number | null; archive_state: string | null }>(
+            sql`SELECT time_archived, archive_state FROM session WHERE id = 'archiving'`,
+          ),
+        ).toEqual({ time_archived: null, archive_state: "archiving" })
         yield* expectAbort(addSession(db, "under_archiving", { parent: "archiving" }))
 
         yield* exempt(db, "exempt_child")
@@ -115,18 +149,23 @@ describe("family archive triggers", () => {
     )
   })
 
-  test("rejects message and part inserts for archived sessions and resolves parts from message_id", async () => {
+  test("rejects message and part inserts for archived and archiving sessions", async () => {
     await run(
       Effect.gen(function* () {
         const db = yield* setup
         yield* addSession(db, "archived")
+        yield* addSession(db, "archiving")
         yield* addSession(db, "active")
         yield* addMessage(db, "msg_active", "active")
         yield* addMessage(db, "msg_archived", "archived")
+        yield* addMessage(db, "msg_archiving", "archiving")
         yield* archive(db, "archived")
+        yield* archive(db, "archiving", { at: null, state: "archiving" })
 
         yield* expectAbort(addMessage(db, "msg_blocked", "archived"))
+        yield* expectAbort(addMessage(db, "msg_blocked_archiving", "archiving"))
         yield* expectAbort(addPart(db, "part_blocked", "msg_archived", "active"))
+        yield* expectAbort(addPart(db, "part_blocked_archiving", "msg_archiving", "active"))
         yield* expectAbort(addPart(db, "part_missing", "msg_missing", "active"))
 
         // The part's own session_id is ignored; the message session decides.
@@ -158,37 +197,13 @@ describe("family archive triggers", () => {
           yield* expectAbort(db.run(statement))
         }
 
-        // Seed rows in the active session, then archive it and try to update them.
-        yield* db
-          .run(
-            sql`INSERT INTO session_input (id, session_id, prompt, delivery, admitted_seq, time_created) VALUES ('in_2', 'active', 'p', 'steer', 1, 1)`,
-          )
-          .pipe(Effect.orDie)
-        yield* db
-          .run(
-            sql`INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data) VALUES ('sm_2', 'active', 'user', 1, 1, 1, '{}')`,
-          )
-          .pipe(Effect.orDie)
-        yield* db
-          .run(
-            sql`INSERT INTO todo (session_id, content, status, priority, position, time_created, time_updated) VALUES ('active', 'c', 'pending', 'low', 1, 1, 1)`,
-          )
-          .pipe(Effect.orDie)
-        yield* db
-          .run(
-            sql`INSERT INTO session_context_epoch (session_id, baseline, snapshot, baseline_seq) VALUES ('active', '{}', '{}', 1)`,
-          )
-          .pipe(Effect.orDie)
-        yield* db
-          .run(
-            sql`INSERT INTO session_share (session_id, id, secret, url, time_created, time_updated) VALUES ('active', 's', 'x', 'u', 1, 1)`,
-          )
-          .pipe(Effect.orDie)
+        // Seed rows in a live session, then archive it and try to update them.
+        yield* seedScopedRows(db, "active")
         yield* archive(db, "active")
 
         const updates: Array<ReturnType<typeof sql>> = [
-          sql`UPDATE session_input SET prompt = 'changed' WHERE id = 'in_2'`,
-          sql`UPDATE session_message SET data = '{"changed":true}' WHERE id = 'sm_2'`,
+          sql`UPDATE session_input SET prompt = 'changed' WHERE id = 'in_active'`,
+          sql`UPDATE session_message SET data = '{"changed":true}' WHERE id = 'sm_active'`,
           sql`UPDATE todo SET content = 'changed' WHERE session_id = 'active' AND position = 1`,
           sql`UPDATE session_context_epoch SET baseline = '{"changed":true}' WHERE session_id = 'active'`,
           sql`UPDATE session_share SET url = 'changed' WHERE session_id = 'active'`,
@@ -200,7 +215,65 @@ describe("family archive triggers", () => {
     )
   })
 
-  test("rejects moves into and out of archived families", async () => {
+  test("rejects UPDATE moves between archived and active sessions for every session-scoped row", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* setup
+        yield* addSession(db, "archived")
+        yield* addSession(db, "active")
+        yield* addSession(db, "fresh")
+        yield* addMessage(db, "msg_archived", "archived")
+        yield* addMessage(db, "msg_active", "active")
+        yield* addPart(db, "part_archived", "msg_archived", "archived")
+        yield* addPart(db, "part_active", "msg_active", "active")
+        yield* seedScopedRows(db, "archived")
+        yield* seedScopedRows(db, "active")
+        yield* archive(db, "archived")
+
+        const moves = [
+          sql`UPDATE message SET session_id = 'fresh' WHERE id = 'msg_archived'`,
+          sql`UPDATE message SET session_id = 'archived' WHERE id = 'msg_active'`,
+          sql`UPDATE session_input SET session_id = 'fresh' WHERE id = 'in_archived'`,
+          sql`UPDATE session_input SET session_id = 'archived' WHERE id = 'in_active'`,
+          sql`UPDATE session_message SET session_id = 'fresh' WHERE id = 'sm_archived'`,
+          sql`UPDATE session_message SET session_id = 'archived' WHERE id = 'sm_active'`,
+          sql`UPDATE todo SET session_id = 'fresh' WHERE session_id = 'archived' AND position = 1`,
+          sql`UPDATE todo SET session_id = 'archived' WHERE session_id = 'active' AND position = 1`,
+          sql`UPDATE session_context_epoch SET session_id = 'fresh' WHERE session_id = 'archived'`,
+          sql`UPDATE session_context_epoch SET session_id = 'archived' WHERE session_id = 'active'`,
+          sql`UPDATE session_share SET session_id = 'fresh' WHERE session_id = 'archived'`,
+          sql`UPDATE session_share SET session_id = 'archived' WHERE session_id = 'active'`,
+        ]
+        for (const statement of moves) {
+          yield* expectAbort(db.run(statement))
+        }
+      }),
+    )
+  })
+
+  test("rejects part UPDATEs that resolve to archived or missing messages", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* setup
+        yield* addSession(db, "archived")
+        yield* addSession(db, "active")
+        yield* addMessage(db, "msg_archived", "archived")
+        yield* addMessage(db, "msg_active", "active")
+        yield* addPart(db, "part_archived", "msg_archived", "archived")
+        yield* addPart(db, "part_active", "msg_active", "active")
+        yield* archive(db, "archived")
+
+        yield* expectAbort(db.run(sql`UPDATE part SET message_id = 'msg_active' WHERE id = 'part_archived'`))
+        yield* expectAbort(db.run(sql`UPDATE part SET message_id = 'msg_archived' WHERE id = 'part_active'`))
+        yield* expectAbort(db.run(sql`UPDATE part SET message_id = 'msg_missing' WHERE id = 'part_active'`))
+        yield* expectAbort(db.run(sql`UPDATE part SET data = '{"changed":true}' WHERE id = 'part_archived'`))
+
+        yield* db.run(sql`UPDATE part SET data = '{"changed":true}' WHERE id = 'part_active'`).pipe(Effect.orDie)
+      }),
+    )
+  })
+
+  test("rejects moves into and out of archived families, including combined archive and reparent", async () => {
     await run(
       Effect.gen(function* () {
         const db = yield* setup
@@ -212,6 +285,15 @@ describe("family archive triggers", () => {
 
         yield* expectAbort(db.run(sql`UPDATE session SET parent_id = 'root' WHERE id = 'outside'`))
         yield* expectAbort(db.run(sql`UPDATE session SET parent_id = NULL WHERE id = 'child'`))
+
+        // The guard authorizes archive-field changes only; a combined archive
+        // plus reparent still cannot escape the parent-move check.
+        yield* db.run(sql`INSERT INTO session_archive_guard (session_id) VALUES ('outside')`).pipe(Effect.orDie)
+        yield* expectAbort(
+          db.run(sql`UPDATE session SET parent_id = 'other', time_archived = 2000 WHERE id = 'outside'`),
+        )
+        yield* db.run(sql`DELETE FROM session_archive_guard WHERE session_id = 'outside'`).pipe(Effect.orDie)
+
         yield* db.run(sql`UPDATE session SET parent_id = 'other' WHERE id = 'outside'`).pipe(Effect.orDie)
 
         expect(
@@ -222,7 +304,7 @@ describe("family archive triggers", () => {
     )
   })
 
-  test("allows a full archived projection but rejects non-archive changes", async () => {
+  test("allows only archive-field changes on an archived row and protects every other column", async () => {
     await run(
       Effect.gen(function* () {
         const db = yield* setup
@@ -236,6 +318,7 @@ describe("family archive triggers", () => {
           .run(
             sql`
             UPDATE session SET
+              id = id,
               project_id = project_id,
               workspace_id = workspace_id,
               parent_id = parent_id,
@@ -268,11 +351,18 @@ describe("family archive triggers", () => {
           `,
           )
           .pipe(Effect.orDie)
-        yield* db.run(sql`DELETE FROM session_archive_guard WHERE session_id = 'root'`).pipe(Effect.orDie)
 
+        expect(
+          (yield* db.get<{ time_updated: number }>(sql`SELECT time_updated FROM session WHERE id = 'root'`))
+            ?.time_updated,
+        ).toBe(1)
+
+        // The guard remains present on purpose: it authorizes archive-field
+        // transitions only, never arbitrary non-archive changes.
         yield* expectAbort(db.run(sql`UPDATE session SET summary_files = 5 WHERE id = 'root'`))
         yield* expectAbort(db.run(sql`UPDATE session SET parent_id = 'other' WHERE id = 'root'`))
         yield* expectAbort(db.run(sql`UPDATE session SET title = 'changed' WHERE id = 'root'`))
+        yield* expectAbort(db.run(sql`UPDATE session SET id = 'renamed' WHERE id = 'root'`))
       }),
     )
   })
@@ -295,7 +385,6 @@ describe("family archive triggers", () => {
         yield* db.run(sql`DELETE FROM session_import_exempt WHERE session_id = 'target'`).pipe(Effect.orDie)
         yield* archive(db, "target")
 
-        expect(yield* count(db, "session_archive_guard")).toBe(0)
         expect(yield* count(db, "session_import_exempt")).toBe(0)
       }),
     )

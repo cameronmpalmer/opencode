@@ -2,6 +2,7 @@ export * as SessionProjector from "./projector"
 
 import { and, desc, eq, gt, or, sql } from "drizzle-orm"
 import { DateTime, Effect, Layer, Schema } from "effect"
+import { isDeepStrictEqual } from "node:util"
 import { Database } from "../database/database"
 import { EventV2 } from "../event"
 import { makeGlobalNode } from "../effect/app-node"
@@ -362,20 +363,14 @@ const layer = Layer.effectDiscard(
     yield* events.project(SessionV1.Event.Updated, (event) =>
       Effect.gen(function* () {
         const set = sessionUpdate(event.data.info)
+        const current = yield* db
+          .select()
+          .from(SessionTable)
+          .where(eq(SessionTable.id, event.data.sessionID))
+          .get()
+          .pipe(Effect.orDie)
         const changedArchiveFields = presentedArchiveFields(set)
         if (changedArchiveFields.length > 0) {
-          const current = yield* db
-            .select({
-              time_archived: SessionTable.time_archived,
-              family_archive_id: SessionTable.family_archive_id,
-              archive_cause: SessionTable.archive_cause,
-              archive_state: SessionTable.archive_state,
-              archive_state_at: SessionTable.archive_state_at,
-            })
-            .from(SessionTable)
-            .where(eq(SessionTable.id, event.data.sessionID))
-            .get()
-            .pipe(Effect.orDie)
           const changed = changedArchiveFields.some((field) => (current?.[field] ?? null) !== (set[field] ?? null))
           if (changed) {
             const guard = yield* db
@@ -391,6 +386,22 @@ const layer = Layer.effectDiscard(
                 ),
               )
             }
+          }
+        }
+        if (current && (current.time_archived !== null || current.archive_state === "archiving")) {
+          const row = current as Record<string, unknown>
+          const projected = set as Record<string, unknown>
+          const changed = Object.keys(projected).some((key) => {
+            if ((archiveFields as readonly string[]).includes(key)) return false
+            return !isDeepStrictEqual(row[key] ?? null, projected[key] ?? null)
+          })
+          if (changed) {
+            return yield* Effect.die(
+              new SessionArchivedError({
+                sessionID: event.data.sessionID,
+                message: `Archived session ${event.data.sessionID} rejects non-archive updates`,
+              }),
+            )
           }
         }
         yield* db

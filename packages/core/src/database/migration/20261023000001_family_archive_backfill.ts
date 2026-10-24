@@ -68,14 +68,12 @@ export default {
 
           SELECT CASE WHEN (OLD.time_archived IS NOT NULL OR OLD.archive_state = 'archiving')
             AND NOT EXISTS (
-              SELECT 1 FROM \`session_archive_guard\` g WHERE g.session_id = NEW.id
-            )
-            AND NOT EXISTS (
               SELECT 1 FROM \`session_import_exempt\` e
               WHERE e.session_id = NEW.id AND e.expires_at > ${now}
             )
             AND (
-              NEW.project_id IS NOT OLD.project_id
+              NEW.id IS NOT OLD.id
+              OR NEW.project_id IS NOT OLD.project_id
               OR NEW.workspace_id IS NOT OLD.workspace_id
               OR NEW.parent_id IS NOT OLD.parent_id
               OR NEW.slug IS NOT OLD.slug
@@ -112,7 +110,11 @@ export default {
               WHERE e.session_id = NEW.id AND e.expires_at > ${now}
             )
             AND (
-              EXISTS (${ancestorWalk("OLD.parent_id")})
+              OLD.time_archived IS NOT NULL
+              OR OLD.archive_state = 'archiving'
+              OR NEW.time_archived IS NOT NULL
+              OR NEW.archive_state = 'archiving'
+              OR EXISTS (${ancestorWalk("OLD.parent_id")})
               OR EXISTS (${ancestorWalk("NEW.parent_id")})
             )
             THEN RAISE(ABORT, 'SessionArchivedError: cannot move a session into or out of an archived family')

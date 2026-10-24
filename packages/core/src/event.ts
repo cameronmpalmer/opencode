@@ -1,12 +1,13 @@
 export * as EventV2 from "./event"
 
-import { Cause, Context, Effect, Exit, Layer, Option, PubSub, Queue, Ref, Schema, Stream } from "effect"
+import { Cause, Context, Effect, Exit, Layer, Option, PubSub, Queue, Ref, Result, Schema, Stream } from "effect"
 import { Event } from "@opencode-ai/schema/event"
 import type { Data, Definition, Payload } from "@opencode-ai/schema/event"
 import { and, asc, eq, gt, inArray } from "drizzle-orm"
 import { Database } from "./database/database"
 import { EventSequenceTable, EventTable } from "./event/sql"
 import { Location } from "./location"
+import { SessionArchivedError } from "./session/error"
 import { makeGlobalNode } from "./effect/app-node"
 import { isDeepStrictEqual } from "node:util"
 import { Durable } from "@opencode-ai/schema/durable-event-manifest"
@@ -337,7 +338,24 @@ export const layerWith = (options?: LayerOptions) =>
                             durable: { aggregateID, seq, version: durable.version },
                           } as Payload
                           for (const projector of list) {
-                            yield* projector(committed)
+                            yield* projector(committed).pipe(
+                              Effect.catchCause((cause) => {
+                                const found = Cause.findDefect(cause)
+                                if (Result.isFailure(found) || !(found.success instanceof SessionArchivedError)) {
+                                  return Effect.failCause(cause)
+                                }
+                                const archived = found.success
+                                return Effect.gen(function* () {
+                                  yield* Effect.logWarning("Rejected durable event for an archived session", {
+                                    eventID: event.id,
+                                    type: event.type,
+                                    sessionID: archived.sessionID,
+                                    reason: archived.message,
+                                  })
+                                  return yield* Effect.failCause(cause)
+                                })
+                              }),
+                            )
                           }
                           if (commit) yield* commit(seq)
                           yield* db
