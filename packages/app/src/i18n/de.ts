@@ -1182,4 +1182,12 @@ export const dict = {
   "help.tabs.persistence": "Wenn Sie die App erneut öffnen, sind Ihre Tabs weiterhin geöffnet.",
   "help.tabs.worktrees":
     "Das neue Design unterstützt Git-Worktrees noch nicht. Diese Funktion folgt in Kürze. Wenn Sie das bisherige Layout vorerst weiterverwenden möchten, können Sie in den Einstellungen zwischen den Layouts wechseln. Beachten Sie jedoch, dass das neue Layout in einigen Wochen dauerhaft verwendet wird.",
+  "session.archive.title": "Archive session",
+  "session.archive.confirm.single": "Archive this session? It will be hidden from your session list.",
+  "session.archive.confirm.running": "This session is running. Archive it and cancel the running task?",
+  "session.archive.confirm.family":
+    "Archive this session and its {{count}} child sessions? {{tasks}} running tasks will be cancelled.",
+  "workspace.archive.confirm":
+    "Archive {{families}} families and {{sessions}} sessions? {{tasks}} running tasks will be cancelled.",
+  "workspace.reset.archiveFailed.title": "Some sessions could not be archived",
 } satisfies Partial<Record<Keys, string>>

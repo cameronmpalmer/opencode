@@ -15,12 +15,13 @@ import type { LocalProject } from "@/context/layout"
 import { useLanguage } from "@/context/language"
 import { ServerConnection } from "@/context/server"
 import { sessionHasOpenTab, useTabs } from "@/context/tabs"
-import { compareSessionTime, displayName, errorMessage, projectForSession } from "@/pages/layout/helpers"
+import { compareSessionTime, displayName, projectForSession } from "@/pages/layout/helpers"
 import { useSessionTabAvatarState } from "@/pages/layout/project-avatar-state"
 import { pathKey } from "@/utils/path-key"
 import { showToast } from "@/utils/toast"
-import { Binary } from "@opencode-ai/core/util/binary"
 import { archiveHomeSession } from "../home-session-archive"
+import { confirmArchiveSession } from "@/components/dialog-archive-session"
+import { archiveErrorMessage, legacyArchiveSession } from "@/utils/session-archive"
 import type { HomeController } from "./home-controller"
 
 const HOME_SESSION_LIMIT = 64
@@ -208,28 +209,27 @@ export function createHomeSessionsController(home: HomeController) {
         const conn = home.server.focused()
         const ctx = home.server.focusedContext()
         if (!conn || !ctx) return
-        const [, setStore] = ctx.sync.child(session.directory)
-        if ((await ctx.sdk.protocol) !== "v1") return
+        const [store, setStore] = ctx.sync.child(session.directory)
         await archiveHomeSession({
           server: ServerConnection.key(conn),
           session,
-          archive: (sessionID) =>
-            ctx.sdk.client.session.update({
-              sessionID,
-              directory: session.directory,
-              time: { archived: Date.now() },
-            }),
-          remove: () =>
+          api: ctx.sdk.api.session,
+          confirm: (preview) => confirmArchiveSession(dialog, language, preview),
+          localSessions: () => store.session,
+          legacyArchive: (sessionID, directory) =>
+            legacyArchiveSession(ctx.sdk.client, sessionID, directory ?? session.directory),
+          remove: (sessionIDs) => {
+            const removed = new Set(sessionIDs)
             setStore(
               produce((draft) => {
-                const match = Binary.search(draft.session, session.id, (item) => item.id)
-                if (match.found) draft.session.splice(match.index, 1)
+                draft.session = draft.session.filter((item) => !removed.has(item.id))
               }),
-            ),
+            )
+          },
           onError: (cause) =>
             showToast({
               title: language.t("common.requestFailed"),
-              description: errorMessage(cause, language.t("common.requestFailed")),
+              description: archiveErrorMessage(cause, language.t("common.requestFailed")),
             }),
         })
       },

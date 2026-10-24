@@ -1161,4 +1161,12 @@ export const dict = {
   "workspace.reset.archived.one": "1 سیشن آرکائیو کیا جائے گا۔",
   "workspace.reset.archived.many": "{{count}} سیشنز آرکائیو کیے جائیں گے۔",
   "workspace.reset.note": "یہ ڈیفالٹ برانچ سے ملنے کے لیے ورک اسپیس کو دوبارہ ترتیب دے گا۔",
+  "session.archive.title": "Archive session",
+  "session.archive.confirm.single": "Archive this session? It will be hidden from your session list.",
+  "session.archive.confirm.running": "This session is running. Archive it and cancel the running task?",
+  "session.archive.confirm.family":
+    "Archive this session and its {{count}} child sessions? {{tasks}} running tasks will be cancelled.",
+  "workspace.archive.confirm":
+    "Archive {{families}} families and {{sessions}} sessions? {{tasks}} running tasks will be cancelled.",
+  "workspace.reset.archiveFailed.title": "Some sessions could not be archived",
 }

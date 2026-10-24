@@ -1,6 +1,16 @@
 import type { ServerApi } from "./server"
 import type { ServerProtocol } from "./server-protocol"
-import type { AgentPartInput, FilePartInput, OpencodeClient, Session, TextPartInput } from "@opencode-ai/sdk/v2/client"
+import type {
+  AgentPartInput,
+  FilePartInput,
+  OpencodeClient,
+  Session,
+  SessionArchivePreviewResponse,
+  SessionArchiveResponse,
+  SessionUnarchiveResponse,
+  TextPartInput,
+} from "@opencode-ai/sdk/v2/client"
+import type { FamilyArchiveFields } from "./session"
 import type {
   Project,
   ProjectCurrent,
@@ -18,6 +28,12 @@ import type {
 
 type LegacyClient = OpencodeClient
 type LegacyFor = (directory?: string) => LegacyClient
+export type ArchivePreviewInput = { sessionID: string } & LegacyLocation
+export type ArchiveInput = { sessionID: string; cancel_active?: boolean } & LegacyLocation
+export type SessionArchivePreview = SessionArchivePreviewResponse
+export type SessionArchiveResult = SessionArchiveResponse
+export type SessionUnarchiveResult = SessionUnarchiveResponse
+
 type CompatibleSessionApi = Omit<
   SessionApi,
   "prompt" | "command" | "shell" | "compact" | "rename" | "archive" | "remove"
@@ -27,7 +43,9 @@ type CompatibleSessionApi = Omit<
   shell: (input: SessionShellInput & LegacyPrompt) => Promise<SessionShellOutput>
   compact: (input: SessionCompactInput & { model?: LegacyPrompt["model"] }) => Promise<SessionCompactOutput>
   rename: (input: Parameters<SessionApi["rename"]>[0] & LegacyLocation) => ReturnType<SessionApi["rename"]>
-  // archive: (input: Parameters<SessionApi["archive"]>[0] & LegacyLocation) => ReturnType<SessionApi["archive"]>
+  archivePreview: (input: ArchivePreviewInput) => Promise<SessionArchivePreview>
+  archive: (input: ArchiveInput) => Promise<SessionArchiveResult>
+  unarchive: (input: ArchivePreviewInput) => Promise<SessionUnarchiveResult>
   remove: (input: Parameters<SessionApi["remove"]>[0] & LegacyLocation) => ReturnType<SessionApi["remove"]>
 }
 type CompatiblePermissionApi = Omit<ServerApi["permission"], "reply"> & {
@@ -58,7 +76,8 @@ function mime(uri: string) {
   return match?.[1] ?? "application/octet-stream"
 }
 
-function sessionInfo(session: Session): SessionInfo {
+function sessionInfo(session: Session): SessionInfo & FamilyArchiveFields {
+  const family = session as Session & FamilyArchiveFields
   return {
     id: session.id,
     parentID: session.parentID,
@@ -71,7 +90,11 @@ function sessionInfo(session: Session): SessionInfo {
     },
     cost: session.cost ?? 0,
     tokens: session.tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-    time: session.time,
+    time: {
+      created: session.time.created,
+      updated: session.time.updated,
+      archived: session.time.archived ?? undefined,
+    },
     title: session.title,
     location: { directory: session.directory, workspaceID: session.workspaceID },
     subpath: session.path,
@@ -80,14 +103,66 @@ function sessionInfo(session: Session): SessionInfo {
       partID: session.revert.partID,
       snapshot: session.revert.snapshot,
     },
+    familyArchiveID: family.familyArchiveID,
+    archiveCause: family.archiveCause,
+    archiveState: family.archiveState,
+    archiveStateAt: family.archiveStateAt,
+    familyMemberCount: family.familyMemberCount,
+  }
+}
+
+function createV2ArchiveApi(
+  input: CompatibleInput,
+): Pick<CompatibleSessionApi, "archivePreview" | "archive" | "unarchive"> {
+  // The family archive routes live on the instance /session API and are served
+  // by both protocol generations. The current promise client does not expose
+  // them, so use the generated V2 SDK client which does.
+  const client = (location?: LegacyLocation) => input.legacy(location?.directory)
+  return {
+    async archivePreview(value) {
+      const result = await client(value).session.archivePreview({
+        sessionID: value.sessionID,
+        directory: value.directory,
+      })
+      if (!result.data) throw new Error("Archive preview unavailable")
+      return result.data
+    },
+    async archive(value) {
+      const result = await client(value).session.archive({
+        sessionID: value.sessionID,
+        directory: value.directory,
+        cancel_active: value.cancel_active,
+      })
+      if (!result.data) throw new Error("Archive failed")
+      return result.data
+    },
+    async unarchive(value) {
+      const result = await client(value).session.unarchive({
+        sessionID: value.sessionID,
+        directory: value.directory,
+      })
+      if (!result.data) throw new Error("Unarchive failed")
+      return result.data
+    },
+  }
+}
+
+function withV2Archive(input: CompatibleInput, api: CompatibleApi): CompatibleApi {
+  return {
+    ...api,
+    session: {
+      ...api.session,
+      ...createV2ArchiveApi(input),
+    },
   }
 }
 
 export function createCompatibleApi(input: CompatibleInput): CompatibleApi {
   const v1 = createV1Api(input)
+  const v2 = () => withV2Archive(input, input.current as CompatibleApi)
   return lazyApi(
-    input.protocol.then((protocol) => (protocol === "v1" ? v1 : input.current)),
-    input.current,
+    input.protocol.then((protocol) => (protocol === "v1" ? v1 : v2())),
+    v2(),
   )
 }
 
@@ -183,9 +258,43 @@ function createV1Api(input: CompatibleInput): CompatibleApi {
       async rename(value: Parameters<ServerApi["session"]["rename"]>[0] & LegacyLocation) {
         await legacy(value).session.update({ sessionID: value.sessionID, title: value.title })
       },
-      // async archive(value: Parameters<ServerApi["session"]["archive"]>[0] & LegacyLocation) {
-      //   await legacy(value).session.update({ sessionID: value.sessionID, time: { archived: Date.now() } })
-      // },
+      async archivePreview(value) {
+        // V1 servers predate family archive. Preview reports an empty subtree so
+        // callers keep the existing single-session confirmation.
+        return {
+          root_id: value.sessionID,
+          descendant_count: 0,
+          active_count: 0,
+          active_session_ids: [],
+        }
+      },
+      async archive(value) {
+        const archiveTime = Date.now()
+        await legacy(value).session.update({
+          sessionID: value.sessionID,
+          directory: value.directory,
+          time: { archived: archiveTime },
+        })
+        return {
+          root_id: value.sessionID,
+          archived_ids: [value.sessionID],
+          already_archived_ids: [],
+          cancelled_ids: [],
+          archive_time: archiveTime,
+        }
+      },
+      async unarchive(value) {
+        await legacy(value).session.update({
+          sessionID: value.sessionID,
+          directory: value.directory,
+          time: { archived: null },
+        })
+        return {
+          root_id: value.sessionID,
+          restored_ids: [value.sessionID],
+          still_archived_ids: [],
+        }
+      },
       async remove(value: Parameters<ServerApi["session"]["remove"]>[0] & LegacyLocation) {
         await legacy(value).session.delete(value)
       },

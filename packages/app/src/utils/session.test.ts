@@ -16,6 +16,11 @@ describe("normalizeSessionInfo", () => {
       location: { directory: "/repo/worktree", workspaceID: "workspace-1" },
       subpath: "worktree",
       revert: { messageID: "message-1", partID: "part-1", snapshot: "snapshot", files: [] },
+      familyArchiveID: "family-1",
+      archiveCause: "user",
+      archiveState: "archiving" as const,
+      archiveStateAt: 9,
+      familyMemberCount: 3,
     } as SessionInfo)
 
     expect(result).toEqual({
@@ -34,6 +39,32 @@ describe("normalizeSessionInfo", () => {
       version: "",
       time: { created: 1, updated: 1 },
       revert: { messageID: "message-1", partID: "part-1", snapshot: "snapshot" },
+      familyArchiveID: "family-1",
+      archiveCause: "user",
+      archiveState: "archiving" as const,
+      archiveStateAt: 9,
+      familyMemberCount: 3,
+    })
+  })
+
+  test("preserves family archive fields on sessions that are already normalized", () => {
+    const session = {
+      ...currentSession("session-1"),
+      familyArchiveID: "family-1",
+      archiveCause: "cascade" as const,
+      archiveState: "archiving" as const,
+      archiveStateAt: 12,
+      familyMemberCount: 2,
+    }
+
+    const result = normalizeSessionInfo(session)
+
+    expect(result).toMatchObject({
+      familyArchiveID: "family-1",
+      archiveCause: "cascade" as const,
+      archiveState: "archiving" as const,
+      archiveStateAt: 12,
+      familyMemberCount: 2,
     })
   })
 

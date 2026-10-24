@@ -1173,4 +1173,12 @@ export const dict = {
   "workspace.reset.archived.many": "{{count}} ဆက်ရှင်များကို သိမ်းဆည်းထားပါမည်။",
   "workspace.reset.note": "၎င်းသည် မူရင်းဌာနခွဲနှင့် ကိုက်ညီစေရန် အလုပ်ခွင်ကို ပြန်လည်သတ်မှတ်ပါမည်။",
   "dialog.usageExceeded.dontShowAgain": "ထပ်မပြပါနှင့်",
+  "session.archive.title": "Archive session",
+  "session.archive.confirm.single": "Archive this session? It will be hidden from your session list.",
+  "session.archive.confirm.running": "This session is running. Archive it and cancel the running task?",
+  "session.archive.confirm.family":
+    "Archive this session and its {{count}} child sessions? {{tasks}} running tasks will be cancelled.",
+  "workspace.archive.confirm":
+    "Archive {{families}} families and {{sessions}} sessions? {{tasks}} running tasks will be cancelled.",
+  "workspace.reset.archiveFailed.title": "Some sessions could not be archived",
 }

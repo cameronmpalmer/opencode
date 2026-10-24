@@ -814,6 +814,11 @@ export const dict = {
   "common.export": "Export",
   "common.reset": "Reset",
   "common.archive": "Archive",
+  "session.archive.title": "Archive session",
+  "session.archive.confirm.single": "Archive this session? It will be hidden from your session list.",
+  "session.archive.confirm.running": "This session is running. Archive it and cancel the running task?",
+  "session.archive.confirm.family":
+    "Archive this session and its {{count}} child sessions? {{tasks}} running tasks will be cancelled.",
   "common.delete": "Delete",
   "common.close": "Close",
   "common.edit": "Edit",
@@ -1146,5 +1151,8 @@ export const dict = {
   "workspace.reset.archived.none": "No active sessions will be archived.",
   "workspace.reset.archived.one": "1 session will be archived.",
   "workspace.reset.archived.many": "{{count}} sessions will be archived.",
+  "workspace.archive.confirm":
+    "Archive {{families}} families and {{sessions}} sessions? {{tasks}} running tasks will be cancelled.",
+  "workspace.reset.archiveFailed.title": "Some sessions could not be archived",
   "workspace.reset.note": "This will reset the workspace to match the default branch.",
 }

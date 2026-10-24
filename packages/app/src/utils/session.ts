@@ -2,7 +2,18 @@ import type { SessionApi, SessionInfo, SessionListInput } from "@opencode-ai/cli
 import type { Session } from "@opencode-ai/sdk/v2/client"
 import { withTimestampedFallback } from "./session-title"
 
-export function normalizeSessionInfo(input: SessionInfo | Session): Session {
+export type FamilyArchiveFields = {
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
+  familyMemberCount?: number
+}
+
+export type SessionInfoWithFamily = (SessionInfo | Session) & FamilyArchiveFields
+export type SessionWithFamily = Session & FamilyArchiveFields
+
+export function normalizeSessionInfo(input: SessionInfoWithFamily): SessionWithFamily {
   if (!("location" in input)) return input
   return {
     id: input.id,
@@ -24,11 +35,16 @@ export function normalizeSessionInfo(input: SessionInfo | Session): Session {
       partID: input.revert.partID,
       snapshot: input.revert.snapshot,
     },
+    familyArchiveID: input.familyArchiveID,
+    archiveCause: input.archiveCause,
+    archiveState: input.archiveState,
+    archiveStateAt: input.archiveStateAt,
+    familyMemberCount: input.familyMemberCount,
   }
 }
 
 export async function listAllSessions(api: Pick<SessionApi, "list">, input: Omit<SessionListInput, "cursor">) {
-  const load = async (cursor?: string): Promise<Session[]> => {
+  const load = async (cursor?: string): Promise<SessionWithFamily[]> => {
     const result = await api.list({ ...input, limit: input.limit ?? 100, cursor })
     const sessions = result.data.map(normalizeSessionInfo)
     if (result.data.length === 0 || !result.cursor.next) return sessions

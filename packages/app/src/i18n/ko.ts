@@ -1164,4 +1164,12 @@ export const dict = {
 
   "desktop.picker.error.notSelected": "선택기에서 파일을 선택하지 않았습니다",
   "desktop.picker.error.sizeLimit": "선택한 첨부 파일이 {{limit}} MB 제한을 초과합니다",
+  "session.archive.title": "Archive session",
+  "session.archive.confirm.single": "Archive this session? It will be hidden from your session list.",
+  "session.archive.confirm.running": "This session is running. Archive it and cancel the running task?",
+  "session.archive.confirm.family":
+    "Archive this session and its {{count}} child sessions? {{tasks}} running tasks will be cancelled.",
+  "workspace.archive.confirm":
+    "Archive {{families}} families and {{sessions}} sessions? {{tasks}} running tasks will be cancelled.",
+  "workspace.reset.archiveFailed.title": "Some sessions could not be archived",
 }

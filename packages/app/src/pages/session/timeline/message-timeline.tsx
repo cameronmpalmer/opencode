@@ -71,6 +71,8 @@ import { legacySessionHref, requireServerKey, sessionHref } from "@/utils/sessio
 import { useSDK } from "@/context/sdk"
 import { useSync } from "@/context/sync"
 import { notifySessionTabsRemoved } from "@/components/titlebar-session-events"
+import { confirmArchiveSession } from "@/components/dialog-archive-session"
+import { archiveErrorMessage, archiveSessionFamily, legacyArchiveSession } from "@/utils/session-archive"
 import { sessionTitle } from "@/utils/session-title"
 import { scheduleConnectedMeasure } from "./measure"
 import { observeElementOffsetReconnectAware } from "./observe-element-offset"
@@ -835,31 +837,36 @@ export function MessageTimeline(props: {
   const archiveSession = async (sessionID: string) => {
     const session = sync().session.get(sessionID)
     if (!session) return
-    if ((await sdk().protocol) !== "v1") return
 
     const sessions = sync().data.session ?? []
     const index = sessions.findIndex((s) => s.id === sessionID)
     const nextSession = index === -1 ? undefined : (sessions[index + 1] ?? sessions[index - 1])
 
-    await sdk()
-      .client.session.update({ sessionID, directory: sdk().directory, time: { archived: Date.now() } })
-      .then(() => {
+    await archiveSessionFamily({
+      api: sdk().api.session,
+      sessionID,
+      directory: sdk().directory,
+      confirm: (preview) => confirmArchiveSession(dialog, language, preview),
+      localSessions: () => sessions,
+      legacyArchive: (id, directory) => legacyArchiveSession(sdk().client, id, directory ?? sdk().directory),
+      remove: (sessionIDs) => {
+        const removed = new Set(sessionIDs)
         sync().set(
           produce((draft) => {
-            const index = draft.session.findIndex((s) => s.id === sessionID)
-            if (index !== -1) draft.session.splice(index, 1)
+            draft.session = draft.session.filter((item) => !removed.has(item.id))
           }),
         )
-        sync().session.evict(sessionID)
+        sessionIDs.forEach((id) => sync().session.evict(id))
         navigateAfterSessionRemoval(sessionID, session.parentID, nextSession?.id)
-        notifySessionTabsRemoved({ directory: sdk().directory, sessionIDs: [sessionID] })
-      })
-      .catch((err) => {
+        notifySessionTabsRemoved({ directory: sdk().directory, sessionIDs })
+      },
+      onError: (err) => {
         showToast({
           title: language.t("common.requestFailed"),
-          description: errorMessage(err),
+          description: archiveErrorMessage(err, language.t("common.requestFailed")),
         })
-      })
+      },
+    })
   }
 
   const deleteSession = async (sessionID: string) => {

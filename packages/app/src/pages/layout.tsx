@@ -40,7 +40,6 @@ import { clearWorkspaceTerminals } from "@/context/terminal"
 import { pickSessionCacheEvictions } from "@/context/global-sync/session-cache"
 import { useNotification } from "@/context/notification"
 import { usePermission } from "@/context/permission"
-import { Binary } from "@opencode-ai/core/util/binary"
 import { retry } from "@opencode-ai/core/util/retry"
 import { playSoundById } from "@/utils/sound"
 import { createAim } from "@/utils/aim"
@@ -48,6 +47,18 @@ import { Worktree as WorktreeState } from "@/utils/worktree"
 import { setSessionHandoff } from "@/pages/session/handoff"
 import { SessionRouteKey, SessionStateKey } from "@/utils/server-scope"
 import { listAllSessions } from "@/utils/session"
+import {
+  archiveErrorMessage,
+  archiveSessionFamily,
+  archiveSessionRoots,
+  groupSessionFamilies,
+  legacyArchiveSession,
+  previewSessionArchive,
+  workspaceArchiveConfirmation,
+  type ArchivePreviewCounts,
+} from "@/utils/session-archive"
+import { confirmArchiveSession } from "@/components/dialog-archive-session"
+import { notifySessionTabsRemoved } from "@/components/titlebar-session-events"
 
 import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { useTheme, type ColorScheme } from "@opencode-ai/ui/theme/context"
@@ -82,6 +93,15 @@ import {
 } from "./layout/sidebar-workspace"
 import { ProjectDragOverlay, SortableProject, type ProjectSidebarContext } from "./layout/sidebar-project"
 import { SidebarContent } from "./layout/sidebar-shell"
+
+type WorkspaceArchiveEntry = {
+  rootID: string
+  directory: string
+  title?: string
+  sessionIDs: string[]
+  preview: ArchivePreviewCounts
+  error?: unknown
+}
 
 export default function LegacyLayout(props: ParentProps) {
   const serverSDK = useServerSDK()
@@ -869,30 +889,42 @@ export default function LegacyLayout(props: ParentProps) {
   }
 
   async function archiveSession(session: Session) {
-    if ((await serverSDK().protocol) !== "v1") return
     const [store, setStore] = serverSync().child(session.directory)
     const sessions = store.session ?? []
     const index = sessions.findIndex((s) => s.id === session.id)
     const nextSession = sessions[index + 1] ?? sessions[index - 1]
 
-    await serverSDK().client.session.update({
+    await archiveSessionFamily({
+      api: serverSDK().api.session,
       sessionID: session.id,
       directory: session.directory,
-      time: { archived: Date.now() },
+      confirm: (preview) => confirmArchiveSession(dialog, language, preview),
+      localSessions: () => sessions,
+      legacyArchive: (sessionID, directory) =>
+        legacyArchiveSession(serverSDK().client, sessionID, directory ?? session.directory),
+      remove: (sessionIDs) => {
+        const removed = new Set(sessionIDs)
+        setStore(
+          produce((draft) => {
+            draft.session = draft.session.filter((item) => !removed.has(item.id))
+          }),
+        )
+        sessionIDs.forEach((sessionID) => serverSync().session.evict(sessionID))
+        notifySessionTabsRemoved({ directory: session.directory, sessionIDs })
+        if (removed.has(session.id) && session.id === params.id) {
+          if (nextSession) {
+            navigate(`/${params.dir}/session/${nextSession.id}`)
+          } else {
+            navigate(`/${params.dir}/session`)
+          }
+        }
+      },
+      onError: (error) =>
+        showToast({
+          title: language.t("common.requestFailed"),
+          description: archiveErrorMessage(error, language.t("common.requestFailed")),
+        }),
     })
-    setStore(
-      produce((draft) => {
-        const match = Binary.search(draft.session, session.id, (s) => s.id)
-        if (match.found) draft.session.splice(match.index, 1)
-      }),
-    )
-    if (session.id === params.id) {
-      if (nextSession) {
-        navigate(`/${params.dir}/session/${nextSession.id}`)
-      } else {
-        navigate(`/${params.dir}/session`)
-      }
-    }
   }
 
   command.register("layout", () => {
@@ -1447,7 +1479,7 @@ export default function LegacyLayout(props: ParentProps) {
     }
   }
 
-  const resetWorkspace = async (root: string, directory: string) => {
+  const resetWorkspace = async (root: string, directory: string, plan: WorkspaceArchiveEntry[]) => {
     if (directory === root) return
     setBusy(directory, true)
 
@@ -1487,20 +1519,45 @@ export default function LegacyLayout(props: ParentProps) {
       return
     }
 
-    if ((await serverSDK().protocol) === "v1")
-      await Promise.all(
-        sessions
-          .filter((session) => session.time.archived === undefined)
-          .map((session) =>
-            serverSDK()
-              .client.session.update({
-                sessionID: session.id,
-                directory: session.directory,
-                time: { archived: Date.now() },
-              })
-              .catch(() => undefined),
-          ),
+    const entries = plan.filter((entry) => !entry.error)
+    const outcomes = await archiveSessionRoots({
+      api: serverSDK().api.session,
+      roots: entries.map((entry) => ({
+        rootID: entry.rootID,
+        directory: entry.directory,
+        sessionIDs: entry.sessionIDs,
+        fallback: entry.preview.fallback,
+      })),
+      legacyArchive: (sessionID, directory) => legacyArchiveSession(serverSDK().client, sessionID, directory),
+    })
+
+    outcomes.forEach((outcome, index) => {
+      if (outcome.error || outcome.sessionIDs.length === 0) return
+      const entry = entries[index]!
+      const [, setStore] = serverSync().child(entry.directory)
+      const removed = new Set(outcome.sessionIDs)
+      setStore(
+        produce((draft) => {
+          draft.session = draft.session.filter((session) => !removed.has(session.id))
+        }),
       )
+      outcome.sessionIDs.forEach((sessionID) => serverSync().session.evict(sessionID))
+      notifySessionTabsRemoved({ directory: entry.directory, sessionIDs: outcome.sessionIDs })
+    })
+
+    const failed = [
+      ...plan.filter((entry) => entry.error).map((entry) => ({ rootID: entry.rootID, error: entry.error })),
+      ...outcomes
+        .filter((outcome) => outcome.error)
+        .map((outcome) => ({ rootID: outcome.rootID, error: outcome.error })),
+    ]
+    if (failed.length > 0) {
+      showToast({
+        variant: "error",
+        title: language.t("workspace.reset.archiveFailed.title"),
+        description: failed.map((item) => `${item.rootID}: ${archiveErrorMessage(item.error)}`).join("\n"),
+      })
+    }
 
     setBusy(directory, false)
     dismiss()
@@ -1588,7 +1645,8 @@ export default function LegacyLayout(props: ParentProps) {
     const [state, setState] = createStore({
       status: "loading" as "loading" | "ready" | "error",
       dirty: false,
-      sessions: [] as Session[],
+      planStatus: "loading" as "loading" | "ready",
+      plan: [] as WorkspaceArchiveEntry[],
     })
 
     const refresh = async () => {
@@ -1596,18 +1654,43 @@ export default function LegacyLayout(props: ParentProps) {
         directory: props.directory,
         order: "desc",
       }).catch(() => [])
-      const active = sessions.filter((session) => session.time.archived === undefined)
-      setState({ sessions: active })
+      const active = sessions.filter((session) => session.time.archived === undefined || session.time.archived === null)
+      const groups = groupSessionFamilies(active)
+      const plan = await Promise.all(
+        groups.map(async (group): Promise<WorkspaceArchiveEntry> => {
+          try {
+            const preview = await previewSessionArchive({
+              api: serverSDK().api.session,
+              sessionID: group.rootID,
+              directory: group.directory,
+            })
+            return { ...group, preview }
+          } catch (error) {
+            return {
+              ...group,
+              preview: {
+                rootID: group.rootID,
+                descendantCount: 0,
+                activeCount: 0,
+                activeSessionIDs: [],
+                fallback: false,
+              },
+              error,
+            }
+          }
+        }),
+      )
+      setState({ plan, planStatus: "ready" })
     }
 
     onMount(() => {
+      void refresh()
       serverSDK()
         .api.vcs.status({ location: { directory: props.directory } })
         .then((result) => {
           const files = result.data
           const dirty = files.length > 0
           setState({ status: "ready", dirty })
-          void refresh()
         })
         .catch(() => {
           setState({ status: "error", dirty: false })
@@ -1616,10 +1699,8 @@ export default function LegacyLayout(props: ParentProps) {
 
     const handleReset = () => {
       dialog.close()
-      void resetWorkspace(props.root, props.directory)
+      void resetWorkspace(props.root, props.directory, state.plan)
     }
-
-    const archivedCount = () => state.sessions.length
 
     const description = () => {
       if (state.status === "loading") return language.t("workspace.status.checking")
@@ -1629,10 +1710,12 @@ export default function LegacyLayout(props: ParentProps) {
     }
 
     const archivedLabel = () => {
-      const count = archivedCount()
-      if (count === 0) return language.t("workspace.reset.archived.none")
-      if (count === 1) return language.t("workspace.reset.archived.one")
-      return language.t("workspace.reset.archived.many", { count })
+      if (state.planStatus !== "ready") return language.t("workspace.status.checking")
+      if (state.plan.length === 0) return language.t("workspace.reset.archived.none")
+      return workspaceArchiveConfirmation(
+        state.plan.map((entry) => entry.preview),
+        language.t,
+      )
     }
 
     return (
@@ -1650,7 +1733,12 @@ export default function LegacyLayout(props: ParentProps) {
             <Button variant="ghost" size="large" onClick={() => dialog.close()}>
               {language.t("common.cancel")}
             </Button>
-            <Button variant="primary" size="large" disabled={state.status === "loading"} onClick={handleReset}>
+            <Button
+              variant="primary"
+              size="large"
+              disabled={state.status === "loading" || state.planStatus !== "ready"}
+              onClick={handleReset}
+            >
               {language.t("workspace.reset.button")}
             </Button>
           </div>

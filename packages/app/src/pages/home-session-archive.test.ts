@@ -19,9 +19,26 @@ test("archiving a Home session removes its open titlebar tab", async () => {
   await archiveHomeSession({
     server: remote,
     session: { id: "ses_1", directory: "/workspace" },
-    archive: async () => undefined,
-    remove: () => {
-      removed = true
+    api: {
+      archivePreview: async () => ({
+        root_id: "ses_1",
+        descendant_count: 0,
+        active_count: 0,
+        active_session_ids: [],
+      }),
+      archive: async () => ({
+        root_id: "ses_1",
+        archived_ids: ["ses_1"],
+        already_archived_ids: [],
+        cancelled_ids: [],
+        archive_time: 1,
+      }),
+    },
+    confirm: () => true,
+    localSessions: () => [{ id: "ses_1", directory: "/workspace" }],
+    legacyArchive: async () => undefined,
+    remove: (sessionIDs) => {
+      removed = sessionIDs.includes("ses_1")
     },
   })
 
@@ -37,7 +54,18 @@ test("reports archive failures without removing the session", async () => {
   await archiveHomeSession({
     server: remote,
     session: { id: "ses_1", directory: "/workspace" },
-    archive: async () => Promise.reject(failure),
+    api: {
+      archivePreview: async () => ({
+        root_id: "ses_1",
+        descendant_count: 0,
+        active_count: 0,
+        active_session_ids: [],
+      }),
+      archive: async () => Promise.reject(failure),
+    },
+    confirm: () => true,
+    localSessions: () => [{ id: "ses_1", directory: "/workspace" }],
+    legacyArchive: async () => undefined,
     remove: () => {
       removed = true
     },

@@ -4,7 +4,7 @@ import { createCompatibleApi } from "./server-compat"
 
 function setup(
   protocol: "v1" | "v2" | Promise<"v1" | "v2">,
-  responses?: { vcs?: { branch: string; default_branch: string } },
+  responses?: { vcs?: { branch: string; default_branch: string }; sessions?: unknown[] },
 ) {
   const requests: Request[] = []
   const fetcher = Object.assign(
@@ -22,6 +22,30 @@ function setup(
           time: { created: 1, updated: 1 },
         })
       }
+      if (request.method === "GET" && new URL(request.url).pathname.endsWith("/archive-preview")) {
+        return Response.json({
+          root_id: "ses_1",
+          descendant_count: 2,
+          active_count: 1,
+          active_session_ids: ["ses_1"],
+        })
+      }
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/archive")) {
+        return Response.json({
+          root_id: "ses_1",
+          archived_ids: ["ses_1", "ses_2"],
+          already_archived_ids: [],
+          cancelled_ids: ["ses_1"],
+          archive_time: 10,
+        })
+      }
+      if (request.method === "POST" && new URL(request.url).pathname.endsWith("/unarchive")) {
+        return Response.json({
+          root_id: "ses_1",
+          restored_ids: ["ses_1", "ses_2"],
+          still_archived_ids: [],
+        })
+      }
       if (request.method === "POST" && request.url.endsWith("/prompt_async"))
         return new Response(undefined, { status: 204 })
       if (request.method === "POST" && request.url.endsWith("/prompt")) {
@@ -37,6 +61,8 @@ function setup(
       }
       if (request.method === "GET" && new URL(request.url).pathname === "/vcs")
         return Response.json(responses?.vcs ?? {})
+      if (request.method === "GET" && new URL(request.url).pathname === "/session")
+        return Response.json(responses?.sessions ?? [])
       if (request.method === "GET") return Response.json([])
       return new Response(undefined, { status: 204 })
     },
@@ -53,18 +79,41 @@ function setup(
 }
 
 describe("createCompatibleApi", () => {
-  /*
   test("routes V1 archive through the legacy session update", async () => {
     const { api, requests } = setup("v1")
-    await api.session.archive({ sessionID: "ses_1", directory: "/repo" })
+    const result = await api.session.archive({ sessionID: "ses_1", directory: "/repo" })
 
     const url = new URL(requests[0]!.url)
     expect(url.pathname).toBe("/session/ses_1")
     expect(requests[0]!.headers.get("x-opencode-directory")).toBe("%2Frepo")
     expect(requests[0]!.method).toBe("PATCH")
     expect(await requests[0]!.json()).toMatchObject({ time: { archived: expect.any(Number) } })
+    expect(result.archived_ids).toEqual(["ses_1"])
   })
-  */
+
+  test("reports an empty V1 family preview without calling the server", async () => {
+    const { api, requests } = setup("v1")
+
+    const preview = await api.session.archivePreview({ sessionID: "ses_1", directory: "/repo" })
+
+    expect(requests).toHaveLength(0)
+    expect(preview).toEqual({
+      root_id: "ses_1",
+      descendant_count: 0,
+      active_count: 0,
+      active_session_ids: [],
+    })
+  })
+
+  test("routes V1 unarchive through the legacy session update", async () => {
+    const { api, requests } = setup("v1")
+
+    await api.session.unarchive({ sessionID: "ses_1", directory: "/repo" })
+
+    expect(new URL(requests[0]!.url).pathname).toBe("/session/ses_1")
+    expect(requests[0]!.method).toBe("PATCH")
+    expect(await requests[0]!.json()).toEqual({ time: { archived: null } })
+  })
 
   test("converts current prompts to the V1 prompt contract", async () => {
     const { api, requests } = setup("v1")
@@ -147,15 +196,66 @@ describe("createCompatibleApi", () => {
     expect(detections).toBe(1)
   })
 
-  /*
-  test("keeps V2 session actions on the current API", async () => {
+  test("previews a V2 family through the generated archive route", async () => {
     const { api, requests } = setup("v2")
-    await api.session.archive({ sessionID: "ses_1" })
 
-    expect(new URL(requests[0]!.url).pathname).toBe("/api/session/ses_1/archive")
-    expect(requests[0]!.method).toBe("POST")
+    const preview = await api.session.archivePreview({ sessionID: "ses_1" })
+
+    expect(new URL(requests[0]!.url).pathname).toBe("/session/ses_1/archive-preview")
+    expect(requests[0]!.method).toBe("GET")
+    expect(preview).toMatchObject({ descendant_count: 2, active_count: 1 })
   })
-  */
+
+  test("keeps V2 family archive on the generated archive route", async () => {
+    const { api, requests } = setup("v2")
+
+    const result = await api.session.archive({ sessionID: "ses_1" })
+
+    expect(new URL(requests[0]!.url).pathname).toBe("/session/ses_1/archive")
+    expect(requests[0]!.method).toBe("POST")
+    expect(result.archived_ids).toEqual(["ses_1", "ses_2"])
+  })
+
+  test("keeps V2 family unarchive on the generated unarchive route", async () => {
+    const { api, requests } = setup("v2")
+
+    const result = await api.session.unarchive({ sessionID: "ses_1" })
+
+    expect(new URL(requests[0]!.url).pathname).toBe("/session/ses_1/unarchive")
+    expect(requests[0]!.method).toBe("POST")
+    expect(result.restored_ids).toEqual(["ses_1", "ses_2"])
+  })
+
+  test("preserves family archive fields through the V1 session projection", async () => {
+    const { api } = setup("v1", {
+      sessions: [
+        {
+          id: "ses_1",
+          slug: "ses_1",
+          projectID: "project",
+          directory: "/repo",
+          title: "Session",
+          version: "1",
+          time: { created: 1, updated: 1 },
+          familyArchiveID: "family-1",
+          archiveCause: "cascade",
+          archiveState: "archiving",
+          archiveStateAt: 4,
+          familyMemberCount: 3,
+        },
+      ],
+    })
+
+    const result = await api.session.list({ directory: "/repo" })
+
+    expect(result.data[0]).toMatchObject({
+      familyArchiveID: "family-1",
+      archiveCause: "cascade",
+      archiveState: "archiving",
+      archiveStateAt: 4,
+      familyMemberCount: 3,
+    })
+  })
 
   test("uses the global V1 session search endpoint", async () => {
     const { api, requests } = setup("v1")
