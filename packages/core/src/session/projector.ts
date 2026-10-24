@@ -148,6 +148,22 @@ function presentedArchiveFields(set: Partial<typeof SessionTable.$inferInsert>) 
 
 type SessionID = (typeof SessionTable.$inferSelect)["id"]
 
+/**
+ * Drops own `undefined` properties recursively. `fromRow` materializes optional
+ * fields as `undefined`, while parsed JSON columns omit them entirely.
+ */
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical)
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, entry]) => entry !== undefined)
+        .map(([key, entry]) => [key, canonical(entry)]),
+    )
+  }
+  return value
+}
+
 function assertSessionWritable(db: DatabaseService, sessionID: SessionID) {
   return Effect.gen(function* () {
     const row = yield* db
@@ -363,13 +379,23 @@ const layer = Layer.effectDiscard(
     yield* events.project(SessionV1.Event.Updated, (event) =>
       Effect.gen(function* () {
         const set = sessionUpdate(event.data.info)
-        const current = yield* db
-          .select()
+        const changedArchiveFields = presentedArchiveFields(set)
+        const status = yield* db
+          .select({ time_archived: SessionTable.time_archived, archive_state: SessionTable.archive_state })
           .from(SessionTable)
           .where(eq(SessionTable.id, event.data.sessionID))
           .get()
           .pipe(Effect.orDie)
-        const changedArchiveFields = presentedArchiveFields(set)
+        const archived = status !== undefined && (status.time_archived !== null || status.archive_state === "archiving")
+        const current =
+          archived || changedArchiveFields.length > 0
+            ? yield* db
+                .select()
+                .from(SessionTable)
+                .where(eq(SessionTable.id, event.data.sessionID))
+                .get()
+                .pipe(Effect.orDie)
+            : undefined
         if (changedArchiveFields.length > 0) {
           const changed = changedArchiveFields.some((field) => (current?.[field] ?? null) !== (set[field] ?? null))
           if (changed) {
@@ -388,12 +414,12 @@ const layer = Layer.effectDiscard(
             }
           }
         }
-        if (current && (current.time_archived !== null || current.archive_state === "archiving")) {
+        if (current && archived) {
           const row = current as Record<string, unknown>
           const projected = set as Record<string, unknown>
           const changed = Object.keys(projected).some((key) => {
             if ((archiveFields as readonly string[]).includes(key)) return false
-            return !isDeepStrictEqual(row[key] ?? null, projected[key] ?? null)
+            return !isDeepStrictEqual(canonical(row[key]), canonical(projected[key]))
           })
           if (changed) {
             return yield* Effect.die(

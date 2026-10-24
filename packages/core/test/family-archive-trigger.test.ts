@@ -363,6 +363,28 @@ describe("family archive triggers", () => {
         yield* expectAbort(db.run(sql`UPDATE session SET parent_id = 'other' WHERE id = 'root'`))
         yield* expectAbort(db.run(sql`UPDATE session SET title = 'changed' WHERE id = 'root'`))
         yield* expectAbort(db.run(sql`UPDATE session SET id = 'renamed' WHERE id = 'root'`))
+        yield* expectAbort(db.run(sql`UPDATE session SET metadata = '{"changed":true}' WHERE id = 'root'`))
+      }),
+    )
+  })
+
+  test("a single guarded statement cannot archive and change non-archive state", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* setup
+        yield* addSession(db, "target")
+        yield* db.run(sql`INSERT INTO session_archive_guard (session_id) VALUES ('target')`).pipe(Effect.orDie)
+
+        yield* expectAbort(db.run(sql`UPDATE session SET time_archived = 2000, title = 'changed' WHERE id = 'target'`))
+        yield* expectAbort(
+          db.run(
+            sql`UPDATE session SET archive_state = 'archiving', metadata = '{"changed":true}' WHERE id = 'target'`,
+          ),
+        )
+
+        // The same archive-only transition with a guard is allowed.
+        yield* db.run(sql`UPDATE session SET time_archived = 2000 WHERE id = 'target'`).pipe(Effect.orDie)
+        yield* db.run(sql`DELETE FROM session_archive_guard WHERE session_id = 'target'`).pipe(Effect.orDie)
       }),
     )
   })

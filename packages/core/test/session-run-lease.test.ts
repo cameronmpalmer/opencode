@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { and, eq } from "drizzle-orm"
+import { and, eq, sql } from "drizzle-orm"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, LayerMap, Option } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
@@ -101,7 +101,13 @@ const updateArchiveFields = (sessionID: SessionSchema.ID, values: Partial<typeof
       .onConflictDoNothing()
       .run()
       .pipe(Effect.orDie),
-    () => db.update(SessionTable).set(values).where(eq(SessionTable.id, sessionID)).run().pipe(Effect.orDie),
+    () =>
+      db
+        .update(SessionTable)
+        .set({ ...values, time_updated: sql`time_updated` })
+        .where(eq(SessionTable.id, sessionID))
+        .run()
+        .pipe(Effect.orDie),
     () =>
       db
         .delete(SessionArchiveGuardTable)

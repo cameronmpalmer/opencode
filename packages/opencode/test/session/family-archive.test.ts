@@ -5,6 +5,8 @@ import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionArchiveGuardTable, SessionRunLeaseTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Database } from "@opencode-ai/core/database/database"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { and, eq, sql } from "drizzle-orm"
@@ -37,7 +39,12 @@ const seedArchiveFields = (
       (tx) =>
         Effect.gen(function* () {
           yield* tx.insert(SessionArchiveGuardTable).values({ session_id: sessionID }).onConflictDoNothing().run()
-          yield* tx.update(SessionTable).set(fields).where(eq(SessionTable.id, sessionID)).run()
+          // Preserve time_updated: the trigger treats it as a non-archive change.
+          yield* tx
+            .update(SessionTable)
+            .set({ ...fields, time_updated: sql`time_updated` })
+            .where(eq(SessionTable.id, sessionID))
+            .run()
           yield* tx.delete(SessionArchiveGuardTable).where(eq(SessionArchiveGuardTable.session_id, sessionID)).run()
         }),
       { behavior: "immediate" },
@@ -101,6 +108,25 @@ const readFamily = (
   })
 
 describe("family archive", () => {
+  it.instance("archives a family whose sessions carry a model", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const model = { id: ModelV2.ID.make("model"), providerID: ProviderV2.ID.make("provider") }
+      const P = yield* session.create({ title: "P", model })
+      const C = yield* session.create({ parentID: P.id, title: "C", model })
+
+      const result = yield* session.archiveSubtree({ sessionID: P.id })
+
+      expect(result.archived_ids).toEqual(expect.arrayContaining([P.id, C.id]))
+      const root = yield* session.get(P.id)
+      const child = yield* session.get(C.id)
+      expect(root.model).toMatchObject({ id: "model", providerID: "provider" })
+      expect(child.model).toMatchObject({ id: "model", providerID: "provider" })
+      expect(root.time.archived).toBe(result.archive_time)
+      expect(child.time.archived).toBe(result.archive_time)
+    }),
+  )
+
   it.instance("archive archives the whole family and unarchive restores every cascade member", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service

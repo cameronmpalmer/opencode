@@ -21,6 +21,37 @@ const ancestorWalk = (parent: string) => `
 
 const sessionScopedTables = ["session_input", "session_message", "todo", "session_context_epoch", "session_share"]
 
+const nonArchiveColumnsChanged = `
+  NEW.id IS NOT OLD.id
+  OR NEW.project_id IS NOT OLD.project_id
+  OR NEW.workspace_id IS NOT OLD.workspace_id
+  OR NEW.parent_id IS NOT OLD.parent_id
+  OR NEW.slug IS NOT OLD.slug
+  OR NEW.directory IS NOT OLD.directory
+  OR NEW.path IS NOT OLD.path
+  OR NEW.title IS NOT OLD.title
+  OR NEW.version IS NOT OLD.version
+  OR NEW.share_url IS NOT OLD.share_url
+  OR NEW.summary_additions IS NOT OLD.summary_additions
+  OR NEW.summary_deletions IS NOT OLD.summary_deletions
+  OR NEW.summary_files IS NOT OLD.summary_files
+  OR NEW.summary_diffs IS NOT OLD.summary_diffs
+  OR NEW.metadata IS NOT OLD.metadata
+  OR NEW.cost IS NOT OLD.cost
+  OR NEW.tokens_input IS NOT OLD.tokens_input
+  OR NEW.tokens_output IS NOT OLD.tokens_output
+  OR NEW.tokens_reasoning IS NOT OLD.tokens_reasoning
+  OR NEW.tokens_cache_read IS NOT OLD.tokens_cache_read
+  OR NEW.tokens_cache_write IS NOT OLD.tokens_cache_write
+  OR NEW.revert IS NOT OLD.revert
+  OR NEW.permission IS NOT OLD.permission
+  OR NEW.agent IS NOT OLD.agent
+  OR NEW.model IS NOT OLD.model
+  OR NEW.time_created IS NOT OLD.time_created
+  OR NEW.time_updated IS NOT OLD.time_updated
+  OR NEW.time_compacting IS NOT OLD.time_compacting
+`
+
 export default {
   id: "20261023000001_family_archive_backfill",
   runsOnFreshSchema: true,
@@ -71,36 +102,20 @@ export default {
               SELECT 1 FROM \`session_import_exempt\` e
               WHERE e.session_id = NEW.id AND e.expires_at > ${now}
             )
-            AND (
-              NEW.id IS NOT OLD.id
-              OR NEW.project_id IS NOT OLD.project_id
-              OR NEW.workspace_id IS NOT OLD.workspace_id
-              OR NEW.parent_id IS NOT OLD.parent_id
-              OR NEW.slug IS NOT OLD.slug
-              OR NEW.directory IS NOT OLD.directory
-              OR NEW.path IS NOT OLD.path
-              OR NEW.title IS NOT OLD.title
-              OR NEW.version IS NOT OLD.version
-              OR NEW.share_url IS NOT OLD.share_url
-              OR NEW.summary_additions IS NOT OLD.summary_additions
-              OR NEW.summary_deletions IS NOT OLD.summary_deletions
-              OR NEW.summary_files IS NOT OLD.summary_files
-              OR NEW.summary_diffs IS NOT OLD.summary_diffs
-              OR NEW.metadata IS NOT OLD.metadata
-              OR NEW.cost IS NOT OLD.cost
-              OR NEW.tokens_input IS NOT OLD.tokens_input
-              OR NEW.tokens_output IS NOT OLD.tokens_output
-              OR NEW.tokens_reasoning IS NOT OLD.tokens_reasoning
-              OR NEW.tokens_cache_read IS NOT OLD.tokens_cache_read
-              OR NEW.tokens_cache_write IS NOT OLD.tokens_cache_write
-              OR NEW.revert IS NOT OLD.revert
-              OR NEW.permission IS NOT OLD.permission
-              OR NEW.agent IS NOT OLD.agent
-              OR NEW.model IS NOT OLD.model
-              OR NEW.time_created IS NOT OLD.time_created
-              OR NEW.time_updated IS NOT OLD.time_updated
-              OR NEW.time_compacting IS NOT OLD.time_compacting
+            AND (${nonArchiveColumnsChanged})
+            THEN RAISE(ABORT, 'SessionArchivedError: archived session is immutable')
+          END;
+
+          -- A single guarded statement cannot archive a live row while also
+          -- changing non-archive state.
+          SELECT CASE WHEN (NEW.time_archived IS NOT NULL OR NEW.archive_state = 'archiving')
+            AND OLD.time_archived IS NULL
+            AND COALESCE(OLD.archive_state, '') <> 'archiving' 
+            AND NOT EXISTS (
+              SELECT 1 FROM \`session_import_exempt\` e
+              WHERE e.session_id = NEW.id AND e.expires_at > ${now}
             )
+            AND (${nonArchiveColumnsChanged})
             THEN RAISE(ABORT, 'SessionArchivedError: archived session is immutable')
           END;
 

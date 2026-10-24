@@ -338,24 +338,7 @@ export const layerWith = (options?: LayerOptions) =>
                             durable: { aggregateID, seq, version: durable.version },
                           } as Payload
                           for (const projector of list) {
-                            yield* projector(committed).pipe(
-                              Effect.catchCause((cause) => {
-                                const found = Cause.findDefect(cause)
-                                if (Result.isFailure(found) || !(found.success instanceof SessionArchivedError)) {
-                                  return Effect.failCause(cause)
-                                }
-                                const archived = found.success
-                                return Effect.gen(function* () {
-                                  yield* Effect.logWarning("Rejected durable event for an archived session", {
-                                    eventID: event.id,
-                                    type: event.type,
-                                    sessionID: archived.sessionID,
-                                    reason: archived.message,
-                                  })
-                                  return yield* Effect.failCause(cause)
-                                })
-                              }),
-                            )
+                            yield* projector(committed)
                           }
                           if (commit) yield* commit(seq)
                           yield* db
@@ -387,7 +370,21 @@ export const layerWith = (options?: LayerOptions) =>
                         }),
                       { behavior: "immediate" },
                     )
-                    .pipe(Effect.orDie)
+                    .pipe(
+                      Effect.tapCause((cause) => {
+                        const found = Cause.findDefect(cause)
+                        if (Result.isFailure(found) || !(found.success instanceof SessionArchivedError)) {
+                          return Effect.void
+                        }
+                        return Effect.logWarning("Rejected durable event for an archived session", {
+                          eventID: event.id,
+                          type: event.type,
+                          sessionID: found.success.sessionID,
+                          reason: found.success.message,
+                        })
+                      }),
+                      Effect.orDie,
+                    )
                   if (committed) yield* wake(committed.aggregateID)
                   return committed
                 }),

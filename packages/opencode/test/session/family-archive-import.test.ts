@@ -11,7 +11,7 @@ import {
 } from "@opencode-ai/core/session/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { Effect } from "effect"
 import { Project } from "@/project/project"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -56,7 +56,12 @@ const seedArchiveFields = (
       (tx) =>
         Effect.gen(function* () {
           yield* tx.insert(SessionArchiveGuardTable).values({ session_id: sessionID }).onConflictDoNothing().run()
-          yield* tx.update(SessionTable).set(fields).where(eq(SessionTable.id, sessionID)).run()
+          // Preserve time_updated: the trigger treats it as a non-archive change.
+          yield* tx
+            .update(SessionTable)
+            .set({ ...fields, time_updated: sql`time_updated` })
+            .where(eq(SessionTable.id, sessionID))
+            .run()
           yield* tx.delete(SessionArchiveGuardTable).where(eq(SessionArchiveGuardTable.session_id, sessionID)).run()
         }),
       { behavior: "immediate" },

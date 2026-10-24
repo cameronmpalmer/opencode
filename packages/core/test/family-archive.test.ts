@@ -188,7 +188,7 @@ describe("family archive projector", () => {
         archiveCause: "user",
         archiveState: "archiving",
         archiveStateAt: 2000,
-        time: { created: 1, updated: 2, archived: 1000 },
+        time: { created: 1, updated: 1, archived: 1000 },
       })
 
       const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
@@ -429,10 +429,69 @@ describe("family archive projector", () => {
       })
       expect(yield* db.select().from(EventTable).all()).toHaveLength(0)
       expect(yield* db.select().from(EventSequenceTable).all()).toHaveLength(0)
-      const logged = JSON.stringify(messages)
+      const rejections = messages.filter((message) => JSON.stringify(message).includes("Rejected durable event"))
+      expect(rejections).toHaveLength(1)
+      const logged = JSON.stringify(rejections[0])
       expect(logged).toContain("evt_archived_update")
       expect(logged).toContain("session.updated")
       expect(logged).toContain(sessionID)
+      expect(logged).toContain('"reason"')
+      expect(logged).toContain("rejects non-archive updates")
+    }),
+  )
+
+  it.effect("ignores omitted optional model fields when checking an archived update", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow({
+        time_archived: 1000,
+        family_archive_id: sessionID,
+        archive_cause: "cascade",
+        model: { id: ModelV2.ID.make("model"), providerID: ProviderV2.ID.make("provider") },
+      })
+      yield* db.insert(SessionArchiveGuardTable).values({ session_id: sessionID }).run()
+
+      yield* projectUpdated({
+        model: {
+          id: ModelV2.ID.make("model"),
+          providerID: ProviderV2.ID.make("provider"),
+          variant: undefined,
+        },
+        familyArchiveID: sessionID,
+        archiveCause: "cascade",
+        time: { created: 1, updated: 1, archived: 1000 },
+      })
+
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
+      expect(row?.model).toEqual({ id: "model", providerID: "provider" })
+      expect(row?.time_archived).toBe(1000)
+    }),
+  )
+
+  it.effect("ignores omitted optional revert fields when checking an archived update", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow({
+        time_archived: 1000,
+        family_archive_id: sessionID,
+        archive_cause: "cascade",
+        revert: { messageID: SessionMessage.ID.make("msg_revert") },
+      })
+      yield* db.insert(SessionArchiveGuardTable).values({ session_id: sessionID }).run()
+
+      yield* projectUpdated({
+        revert: {
+          messageID: SessionV1.MessageID.make("msg_revert"),
+          partID: undefined,
+          snapshot: undefined,
+          diff: undefined,
+        },
+        familyArchiveID: sessionID,
+        archiveCause: "cascade",
+        time: { created: 1, updated: 1, archived: 1000 },
+      })
+
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
+      expect(String(row?.revert?.messageID)).toBe("msg_revert")
+      expect(row?.time_archived).toBe(1000)
     }),
   )
 
