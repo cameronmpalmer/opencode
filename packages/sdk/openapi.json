@@ -5374,7 +5374,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/Session"
+                    "$ref": "#/components/schemas/Session1"
                   },
                   "description": "List of sessions"
                 }
@@ -5428,7 +5428,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Session"
+                  "$ref": "#/components/schemas/Session3"
                 }
               }
             }
@@ -5611,7 +5611,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Session"
+                  "$ref": "#/components/schemas/Session2"
                 }
               }
             }
@@ -5768,19 +5768,22 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Session"
+                  "$ref": "#/components/schemas/Session4"
                 }
               }
             }
           },
           "400": {
-            "description": "BadRequest | InvalidRequestError",
+            "description": "BadRequest | SessionInvalidArchiveTimeError | InvalidRequestError",
             "content": {
               "application/json": {
                 "schema": {
                   "anyOf": [
                     {
                       "$ref": "#/components/schemas/effect_HttpApiError_BadRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionInvalidArchiveTimeError"
                     },
                     {
                       "$ref": "#/components/schemas/InvalidRequestError"
@@ -5796,6 +5799,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "SessionFamilyMemberError | SessionArchiveInProgressError | SessionArchiveBlockedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionFamilyMemberError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionArchiveInProgressError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionArchiveBlockedError"
+                    }
+                  ]
                 }
               }
             }
@@ -5822,7 +5845,14 @@
                     "type": "object",
                     "properties": {
                       "archived": {
-                        "type": "number"
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "additionalProperties": false
@@ -5880,7 +5910,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/Session"
+                    "$ref": "#/components/schemas/Session1"
                   },
                   "description": "List of children"
                 }
@@ -6561,6 +6591,422 @@
         ]
       }
     },
+    "/session/{sessionID}/archive-preview": {
+      "get": {
+        "tags": ["session"],
+        "operationId": "session.archivePreview",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "pattern": "^ses"
+            },
+            "required": true
+          },
+          {
+            "name": "directory",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Archive preview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "root_id": {
+                      "type": "string",
+                      "pattern": "^ses"
+                    },
+                    "descendant_count": {
+                      "type": "number"
+                    },
+                    "active_count": {
+                      "type": "number"
+                    },
+                    "active_session_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^ses"
+                      }
+                    }
+                  },
+                  "required": ["root_id", "descendant_count", "active_count", "active_session_ids"],
+                  "additionalProperties": false,
+                  "description": "Archive preview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | SessionInvalidArchiveTimeError | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/effect_HttpApiError_BadRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionInvalidArchiveTimeError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundError | FeatureDisabledError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/NotFoundError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FeatureDisabledError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "SessionFamilyMemberError | SessionArchiveInProgressError | SessionArchiveBlockedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionFamilyMemberError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionArchiveInProgressError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionArchiveBlockedError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Count the descendants and active runs that archiving this session would affect.",
+        "summary": "Preview family archive",
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.archivePreview({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/session/{sessionID}/archive": {
+      "post": {
+        "tags": ["session"],
+        "operationId": "session.archive",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "pattern": "^ses"
+            },
+            "required": true
+          },
+          {
+            "name": "directory",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Archived family",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "root_id": {
+                      "type": "string",
+                      "pattern": "^ses"
+                    },
+                    "archived_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^ses"
+                      }
+                    },
+                    "already_archived_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^ses"
+                      }
+                    },
+                    "cancelled_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^ses"
+                      }
+                    },
+                    "archive_time": {
+                      "type": "number"
+                    }
+                  },
+                  "required": ["root_id", "archived_ids", "already_archived_ids", "cancelled_ids", "archive_time"],
+                  "additionalProperties": false,
+                  "description": "Archived family"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | SessionInvalidArchiveTimeError | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/effect_HttpApiError_BadRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionInvalidArchiveTimeError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundError | FeatureDisabledError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/NotFoundError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FeatureDisabledError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "SessionFamilyMemberError | SessionArchiveInProgressError | SessionArchiveBlockedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionFamilyMemberError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionArchiveInProgressError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionArchiveBlockedError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Archive a session and every descendant, cancelling active runs in the subtree. Cancellation is always on; cancel_active=false is rejected with 400. A 409 returns the tagged SessionFamilyMemberError, SessionArchiveInProgressError, or SessionArchiveBlockedError body.",
+        "summary": "Archive family",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "cancel_active": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.archive({\n  ...\n})"
+          }
+        ]
+      }
+    },
+    "/session/{sessionID}/unarchive": {
+      "post": {
+        "tags": ["session"],
+        "operationId": "session.unarchive",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "type": "string",
+              "pattern": "^ses"
+            },
+            "required": true
+          },
+          {
+            "name": "directory",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          },
+          {
+            "name": "workspace",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unarchived family",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "root_id": {
+                      "type": "string",
+                      "pattern": "^ses"
+                    },
+                    "restored_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^ses"
+                      }
+                    },
+                    "still_archived_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "pattern": "^ses"
+                      }
+                    }
+                  },
+                  "required": ["root_id", "restored_ids", "still_archived_ids"],
+                  "additionalProperties": false,
+                  "description": "Unarchived family"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "BadRequest | SessionInvalidArchiveTimeError | InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/effect_HttpApiError_BadRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionInvalidArchiveTimeError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InvalidRequestError"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotFoundError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "SessionFamilyMemberError | SessionArchiveInProgressError | SessionArchiveBlockedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionFamilyMemberError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionArchiveInProgressError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SessionArchiveBlockedError"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Restore a session and the cascade members of its family. A 409 returns the tagged SessionFamilyMemberError or SessionArchiveInProgressError body.",
+        "summary": "Unarchive family",
+        "x-codeSamples": [
+          {
+            "lang": "js",
+            "source": "import { createOpencodeClient } from \"@opencode-ai/sdk\n\nconst client = createOpencodeClient()\nawait client.session.unarchive({\n  ...\n})"
+          }
+        ]
+      }
+    },
     "/session/{sessionID}/fork": {
       "post": {
         "tags": ["session"],
@@ -6598,7 +7044,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Session"
+                  "$ref": "#/components/schemas/Session5"
                 }
               }
             }
@@ -6869,7 +7315,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Session"
+                  "$ref": "#/components/schemas/Session6"
                 }
               }
             }
@@ -6950,7 +7396,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Session"
+                  "$ref": "#/components/schemas/Session7"
                 }
               }
             }
@@ -7573,7 +8019,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Session"
+                  "$ref": "#/components/schemas/Session8"
                 }
               }
             }
@@ -7684,7 +8130,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Session"
+                  "$ref": "#/components/schemas/Session9"
                 }
               }
             }
@@ -9474,7 +9920,14 @@
                   "branch": {
                     "anyOf": [
                       {
-                        "type": "string"
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       },
                       {
                         "type": "null"
@@ -9483,7 +9936,14 @@
                   },
                   "extra": {
                     "anyOf": [
-                      {},
+                      {
+                        "anyOf": [
+                          {},
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       {
                         "type": "null"
                       }
@@ -15877,7 +16337,14 @@
                 "minimum": 0
               },
               "archived": {
-                "type": "number"
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": ["created", "updated"],
@@ -15906,6 +16373,50 @@
             },
             "required": ["messageID"],
             "additionalProperties": false
+          },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": ["id", "slug", "projectID", "directory", "title", "version", "time"],
@@ -15936,8 +16447,15 @@
             "$ref": "#/components/schemas/JSONSchema"
           },
           "retryCount": {
-            "type": "integer",
-            "minimum": 0
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": ["type", "schema"],
@@ -22154,7 +22672,14 @@
                 "minimum": 0
               },
               "archived": {
-                "type": "number"
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": ["created", "updated"],
@@ -22183,6 +22708,49 @@
             },
             "required": ["messageID"],
             "additionalProperties": false
+          },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "project": {
             "anyOf": [
@@ -23063,6 +23631,444 @@
         "required": ["name", "data"],
         "additionalProperties": false
       },
+      "Session1": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "projectID": {
+            "type": "string"
+          },
+          "workspaceID": {
+            "type": "string",
+            "pattern": "^wrk"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "parentID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "additions": {
+                "type": "number"
+              },
+              "deletions": {
+                "type": "number"
+              },
+              "files": {
+                "type": "number"
+              },
+              "diffs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotFileDiff"
+                }
+              }
+            },
+            "required": ["additions", "deletions", "files"],
+            "additionalProperties": false
+          },
+          "cost": {
+            "type": "number"
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "reasoning": {
+                "type": "number"
+              },
+              "cache": {
+                "type": "object",
+                "properties": {
+                  "read": {
+                    "type": "number"
+                  },
+                  "write": {
+                    "type": "number"
+                  }
+                },
+                "required": ["read", "write"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["input", "output", "reasoning", "cache"],
+            "additionalProperties": false
+          },
+          "share": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": ["url"],
+            "additionalProperties": false
+          },
+          "title": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "providerID": {
+                "type": "string"
+              },
+              "variant": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "providerID"],
+            "additionalProperties": false
+          },
+          "version": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "time": {
+            "type": "object",
+            "properties": {
+              "created": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "updated": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "compacting": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "archived": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["created", "updated"],
+            "additionalProperties": false
+          },
+          "permission": {
+            "$ref": "#/components/schemas/PermissionRuleset"
+          },
+          "revert": {
+            "type": "object",
+            "properties": {
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              },
+              "partID": {
+                "type": "string",
+                "pattern": "^prt"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "diff": {
+                "type": "string"
+              }
+            },
+            "required": ["messageID"],
+            "additionalProperties": false
+          },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["id", "slug", "projectID", "directory", "title", "version", "time"],
+        "additionalProperties": false
+      },
+      "Session2": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "projectID": {
+            "type": "string"
+          },
+          "workspaceID": {
+            "type": "string",
+            "pattern": "^wrk"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "parentID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "additions": {
+                "type": "number"
+              },
+              "deletions": {
+                "type": "number"
+              },
+              "files": {
+                "type": "number"
+              },
+              "diffs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotFileDiff"
+                }
+              }
+            },
+            "required": ["additions", "deletions", "files"],
+            "additionalProperties": false
+          },
+          "cost": {
+            "type": "number"
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "reasoning": {
+                "type": "number"
+              },
+              "cache": {
+                "type": "object",
+                "properties": {
+                  "read": {
+                    "type": "number"
+                  },
+                  "write": {
+                    "type": "number"
+                  }
+                },
+                "required": ["read", "write"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["input", "output", "reasoning", "cache"],
+            "additionalProperties": false
+          },
+          "share": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": ["url"],
+            "additionalProperties": false
+          },
+          "title": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "providerID": {
+                "type": "string"
+              },
+              "variant": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "providerID"],
+            "additionalProperties": false
+          },
+          "version": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "time": {
+            "type": "object",
+            "properties": {
+              "created": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "updated": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "compacting": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "archived": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["created", "updated"],
+            "additionalProperties": false
+          },
+          "permission": {
+            "$ref": "#/components/schemas/PermissionRuleset"
+          },
+          "revert": {
+            "type": "object",
+            "properties": {
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              },
+              "partID": {
+                "type": "string",
+                "pattern": "^prt"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "diff": {
+                "type": "string"
+              }
+            },
+            "required": ["messageID"],
+            "additionalProperties": false
+          },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["id", "slug", "projectID", "directory", "title", "version", "time"],
+        "additionalProperties": false
+      },
       "NotFoundError": {
         "type": "object",
         "required": ["name", "data"],
@@ -23081,6 +24087,1208 @@
             }
           }
         }
+      },
+      "Session3": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "projectID": {
+            "type": "string"
+          },
+          "workspaceID": {
+            "type": "string",
+            "pattern": "^wrk"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "parentID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "additions": {
+                "type": "number"
+              },
+              "deletions": {
+                "type": "number"
+              },
+              "files": {
+                "type": "number"
+              },
+              "diffs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotFileDiff"
+                }
+              }
+            },
+            "required": ["additions", "deletions", "files"],
+            "additionalProperties": false
+          },
+          "cost": {
+            "type": "number"
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "reasoning": {
+                "type": "number"
+              },
+              "cache": {
+                "type": "object",
+                "properties": {
+                  "read": {
+                    "type": "number"
+                  },
+                  "write": {
+                    "type": "number"
+                  }
+                },
+                "required": ["read", "write"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["input", "output", "reasoning", "cache"],
+            "additionalProperties": false
+          },
+          "share": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": ["url"],
+            "additionalProperties": false
+          },
+          "title": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "providerID": {
+                "type": "string"
+              },
+              "variant": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "providerID"],
+            "additionalProperties": false
+          },
+          "version": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "time": {
+            "type": "object",
+            "properties": {
+              "created": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "updated": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "compacting": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "archived": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["created", "updated"],
+            "additionalProperties": false
+          },
+          "permission": {
+            "$ref": "#/components/schemas/PermissionRuleset"
+          },
+          "revert": {
+            "type": "object",
+            "properties": {
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              },
+              "partID": {
+                "type": "string",
+                "pattern": "^prt"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "diff": {
+                "type": "string"
+              }
+            },
+            "required": ["messageID"],
+            "additionalProperties": false
+          },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["id", "slug", "projectID", "directory", "title", "version", "time"],
+        "additionalProperties": false
+      },
+      "Session4": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "projectID": {
+            "type": "string"
+          },
+          "workspaceID": {
+            "type": "string",
+            "pattern": "^wrk"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "parentID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "additions": {
+                "type": "number"
+              },
+              "deletions": {
+                "type": "number"
+              },
+              "files": {
+                "type": "number"
+              },
+              "diffs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotFileDiff"
+                }
+              }
+            },
+            "required": ["additions", "deletions", "files"],
+            "additionalProperties": false
+          },
+          "cost": {
+            "type": "number"
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "reasoning": {
+                "type": "number"
+              },
+              "cache": {
+                "type": "object",
+                "properties": {
+                  "read": {
+                    "type": "number"
+                  },
+                  "write": {
+                    "type": "number"
+                  }
+                },
+                "required": ["read", "write"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["input", "output", "reasoning", "cache"],
+            "additionalProperties": false
+          },
+          "share": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": ["url"],
+            "additionalProperties": false
+          },
+          "title": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "providerID": {
+                "type": "string"
+              },
+              "variant": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "providerID"],
+            "additionalProperties": false
+          },
+          "version": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "time": {
+            "type": "object",
+            "properties": {
+              "created": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "updated": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "compacting": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "archived": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["created", "updated"],
+            "additionalProperties": false
+          },
+          "permission": {
+            "$ref": "#/components/schemas/PermissionRuleset"
+          },
+          "revert": {
+            "type": "object",
+            "properties": {
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              },
+              "partID": {
+                "type": "string",
+                "pattern": "^prt"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "diff": {
+                "type": "string"
+              }
+            },
+            "required": ["messageID"],
+            "additionalProperties": false
+          },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["id", "slug", "projectID", "directory", "title", "version", "time"],
+        "additionalProperties": false
+      },
+      "SessionInvalidArchiveTimeError": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": ["SessionInvalidArchiveTimeError"]
+          },
+          "sessionID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["_tag", "sessionID", "message"],
+        "additionalProperties": false
+      },
+      "SessionFamilyMemberError": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": ["SessionFamilyMemberError"]
+          },
+          "sessionID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "familyRootID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["_tag", "sessionID", "familyRootID", "message"],
+        "additionalProperties": false
+      },
+      "SessionArchiveInProgressError": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": ["SessionArchiveInProgressError"]
+          },
+          "sessionID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "sessionIDs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^ses"
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["_tag", "sessionID", "sessionIDs", "message"],
+        "additionalProperties": false
+      },
+      "SessionArchiveBlockedError": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": ["SessionArchiveBlockedError"]
+          },
+          "sessionID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "sessionIDs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^ses"
+            }
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["_tag", "sessionID", "sessionIDs", "message"],
+        "additionalProperties": false
+      },
+      "FeatureDisabledError": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": ["FeatureDisabledError"]
+          },
+          "feature": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["_tag", "feature", "message"],
+        "additionalProperties": false
+      },
+      "Session5": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "projectID": {
+            "type": "string"
+          },
+          "workspaceID": {
+            "type": "string",
+            "pattern": "^wrk"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "parentID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "additions": {
+                "type": "number"
+              },
+              "deletions": {
+                "type": "number"
+              },
+              "files": {
+                "type": "number"
+              },
+              "diffs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotFileDiff"
+                }
+              }
+            },
+            "required": ["additions", "deletions", "files"],
+            "additionalProperties": false
+          },
+          "cost": {
+            "type": "number"
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "reasoning": {
+                "type": "number"
+              },
+              "cache": {
+                "type": "object",
+                "properties": {
+                  "read": {
+                    "type": "number"
+                  },
+                  "write": {
+                    "type": "number"
+                  }
+                },
+                "required": ["read", "write"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["input", "output", "reasoning", "cache"],
+            "additionalProperties": false
+          },
+          "share": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": ["url"],
+            "additionalProperties": false
+          },
+          "title": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "providerID": {
+                "type": "string"
+              },
+              "variant": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "providerID"],
+            "additionalProperties": false
+          },
+          "version": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "time": {
+            "type": "object",
+            "properties": {
+              "created": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "updated": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "compacting": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "archived": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["created", "updated"],
+            "additionalProperties": false
+          },
+          "permission": {
+            "$ref": "#/components/schemas/PermissionRuleset"
+          },
+          "revert": {
+            "type": "object",
+            "properties": {
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              },
+              "partID": {
+                "type": "string",
+                "pattern": "^prt"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "diff": {
+                "type": "string"
+              }
+            },
+            "required": ["messageID"],
+            "additionalProperties": false
+          },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["id", "slug", "projectID", "directory", "title", "version", "time"],
+        "additionalProperties": false
+      },
+      "Session6": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "projectID": {
+            "type": "string"
+          },
+          "workspaceID": {
+            "type": "string",
+            "pattern": "^wrk"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "parentID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "additions": {
+                "type": "number"
+              },
+              "deletions": {
+                "type": "number"
+              },
+              "files": {
+                "type": "number"
+              },
+              "diffs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotFileDiff"
+                }
+              }
+            },
+            "required": ["additions", "deletions", "files"],
+            "additionalProperties": false
+          },
+          "cost": {
+            "type": "number"
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "reasoning": {
+                "type": "number"
+              },
+              "cache": {
+                "type": "object",
+                "properties": {
+                  "read": {
+                    "type": "number"
+                  },
+                  "write": {
+                    "type": "number"
+                  }
+                },
+                "required": ["read", "write"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["input", "output", "reasoning", "cache"],
+            "additionalProperties": false
+          },
+          "share": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": ["url"],
+            "additionalProperties": false
+          },
+          "title": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "providerID": {
+                "type": "string"
+              },
+              "variant": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "providerID"],
+            "additionalProperties": false
+          },
+          "version": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "time": {
+            "type": "object",
+            "properties": {
+              "created": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "updated": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "compacting": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "archived": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["created", "updated"],
+            "additionalProperties": false
+          },
+          "permission": {
+            "$ref": "#/components/schemas/PermissionRuleset"
+          },
+          "revert": {
+            "type": "object",
+            "properties": {
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              },
+              "partID": {
+                "type": "string",
+                "pattern": "^prt"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "diff": {
+                "type": "string"
+              }
+            },
+            "required": ["messageID"],
+            "additionalProperties": false
+          },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["id", "slug", "projectID", "directory", "title", "version", "time"],
+        "additionalProperties": false
+      },
+      "Session7": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "projectID": {
+            "type": "string"
+          },
+          "workspaceID": {
+            "type": "string",
+            "pattern": "^wrk"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "parentID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "additions": {
+                "type": "number"
+              },
+              "deletions": {
+                "type": "number"
+              },
+              "files": {
+                "type": "number"
+              },
+              "diffs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotFileDiff"
+                }
+              }
+            },
+            "required": ["additions", "deletions", "files"],
+            "additionalProperties": false
+          },
+          "cost": {
+            "type": "number"
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "reasoning": {
+                "type": "number"
+              },
+              "cache": {
+                "type": "object",
+                "properties": {
+                  "read": {
+                    "type": "number"
+                  },
+                  "write": {
+                    "type": "number"
+                  }
+                },
+                "required": ["read", "write"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["input", "output", "reasoning", "cache"],
+            "additionalProperties": false
+          },
+          "share": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": ["url"],
+            "additionalProperties": false
+          },
+          "title": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "providerID": {
+                "type": "string"
+              },
+              "variant": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "providerID"],
+            "additionalProperties": false
+          },
+          "version": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "time": {
+            "type": "object",
+            "properties": {
+              "created": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "updated": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "compacting": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "archived": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["created", "updated"],
+            "additionalProperties": false
+          },
+          "permission": {
+            "$ref": "#/components/schemas/PermissionRuleset"
+          },
+          "revert": {
+            "type": "object",
+            "properties": {
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              },
+              "partID": {
+                "type": "string",
+                "pattern": "^prt"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "diff": {
+                "type": "string"
+              }
+            },
+            "required": ["messageID"],
+            "additionalProperties": false
+          },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["id", "slug", "projectID", "directory", "title", "version", "time"],
+        "additionalProperties": false
       },
       "TextPartInput": {
         "type": "object",
@@ -23242,6 +25450,444 @@
           }
         },
         "required": ["_tag", "sessionID", "message"],
+        "additionalProperties": false
+      },
+      "Session8": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "projectID": {
+            "type": "string"
+          },
+          "workspaceID": {
+            "type": "string",
+            "pattern": "^wrk"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "parentID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "additions": {
+                "type": "number"
+              },
+              "deletions": {
+                "type": "number"
+              },
+              "files": {
+                "type": "number"
+              },
+              "diffs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotFileDiff"
+                }
+              }
+            },
+            "required": ["additions", "deletions", "files"],
+            "additionalProperties": false
+          },
+          "cost": {
+            "type": "number"
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "reasoning": {
+                "type": "number"
+              },
+              "cache": {
+                "type": "object",
+                "properties": {
+                  "read": {
+                    "type": "number"
+                  },
+                  "write": {
+                    "type": "number"
+                  }
+                },
+                "required": ["read", "write"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["input", "output", "reasoning", "cache"],
+            "additionalProperties": false
+          },
+          "share": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": ["url"],
+            "additionalProperties": false
+          },
+          "title": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "providerID": {
+                "type": "string"
+              },
+              "variant": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "providerID"],
+            "additionalProperties": false
+          },
+          "version": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "time": {
+            "type": "object",
+            "properties": {
+              "created": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "updated": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "compacting": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "archived": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["created", "updated"],
+            "additionalProperties": false
+          },
+          "permission": {
+            "$ref": "#/components/schemas/PermissionRuleset"
+          },
+          "revert": {
+            "type": "object",
+            "properties": {
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              },
+              "partID": {
+                "type": "string",
+                "pattern": "^prt"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "diff": {
+                "type": "string"
+              }
+            },
+            "required": ["messageID"],
+            "additionalProperties": false
+          },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["id", "slug", "projectID", "directory", "title", "version", "time"],
+        "additionalProperties": false
+      },
+      "Session9": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "projectID": {
+            "type": "string"
+          },
+          "workspaceID": {
+            "type": "string",
+            "pattern": "^wrk"
+          },
+          "directory": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "parentID": {
+            "type": "string",
+            "pattern": "^ses"
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "additions": {
+                "type": "number"
+              },
+              "deletions": {
+                "type": "number"
+              },
+              "files": {
+                "type": "number"
+              },
+              "diffs": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotFileDiff"
+                }
+              }
+            },
+            "required": ["additions", "deletions", "files"],
+            "additionalProperties": false
+          },
+          "cost": {
+            "type": "number"
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number"
+              },
+              "output": {
+                "type": "number"
+              },
+              "reasoning": {
+                "type": "number"
+              },
+              "cache": {
+                "type": "object",
+                "properties": {
+                  "read": {
+                    "type": "number"
+                  },
+                  "write": {
+                    "type": "number"
+                  }
+                },
+                "required": ["read", "write"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["input", "output", "reasoning", "cache"],
+            "additionalProperties": false
+          },
+          "share": {
+            "type": "object",
+            "properties": {
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": ["url"],
+            "additionalProperties": false
+          },
+          "title": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "model": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "providerID": {
+                "type": "string"
+              },
+              "variant": {
+                "type": "string"
+              }
+            },
+            "required": ["id", "providerID"],
+            "additionalProperties": false
+          },
+          "version": {
+            "type": "string"
+          },
+          "metadata": {
+            "type": "object"
+          },
+          "time": {
+            "type": "object",
+            "properties": {
+              "created": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "updated": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "compacting": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "archived": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["created", "updated"],
+            "additionalProperties": false
+          },
+          "permission": {
+            "$ref": "#/components/schemas/PermissionRuleset"
+          },
+          "revert": {
+            "type": "object",
+            "properties": {
+              "messageID": {
+                "type": "string",
+                "pattern": "^msg"
+              },
+              "partID": {
+                "type": "string",
+                "pattern": "^prt"
+              },
+              "snapshot": {
+                "type": "string"
+              },
+              "diff": {
+                "type": "string"
+              }
+            },
+            "required": ["messageID"],
+            "additionalProperties": false
+          },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["id", "slug", "projectID", "directory", "title", "version", "time"],
         "additionalProperties": false
       },
       "EventTuiPromptAppend": {
@@ -23830,8 +26476,15 @@
                 "$ref": "#/components/schemas/JSONSchema"
               },
               "retryCount": {
-                "type": "integer",
-                "minimum": 0
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": ["type", "schema"],
@@ -27296,7 +29949,14 @@
                 "type": "number"
               },
               "archived": {
-                "type": "number"
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": ["created", "updated"],
@@ -27313,6 +29973,49 @@
           },
           "revert": {
             "$ref": "#/components/schemas/RevertState"
+          },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^ses"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": ["id", "projectID", "cost", "tokens", "time", "title", "location"],

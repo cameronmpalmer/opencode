@@ -177,6 +177,10 @@ import type {
   QuestionV2Reply,
   SessionAbortErrors,
   SessionAbortResponses,
+  SessionArchiveErrors,
+  SessionArchivePreviewErrors,
+  SessionArchivePreviewResponses,
+  SessionArchiveResponses,
   SessionChildrenErrors,
   SessionChildrenResponses,
   SessionCommandErrors,
@@ -217,6 +221,8 @@ import type {
   SessionSummarizeResponses,
   SessionTodoErrors,
   SessionTodoResponses,
+  SessionUnarchiveErrors,
+  SessionUnarchiveResponses,
   SessionUnrevertErrors,
   SessionUnrevertResponses,
   SessionUnshareErrors,
@@ -1049,8 +1055,8 @@ export class Workspace extends HeyApiClient {
       workspace?: string
       id?: string
       type?: string
-      branch?: string | null
-      extra?: unknown | null
+      branch?: string | null | null
+      extra?: unknown | null | null
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -3567,7 +3573,7 @@ export class Session2 extends HeyApiClient {
       }
       permission?: PermissionRuleset
       time?: {
-        archived?: number
+        archived?: number | null
       }
     },
     options?: Options<never, ThrowOnError>,
@@ -3861,6 +3867,113 @@ export class Session2 extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<SessionMessageResponses, SessionMessageErrors, ThrowOnError>({
       url: "/session/{sessionID}/message/{messageID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Preview family archive
+   *
+   * Count the descendants and active runs that archiving this session would affect.
+   */
+  public archivePreview<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      SessionArchivePreviewResponses,
+      SessionArchivePreviewErrors,
+      ThrowOnError
+    >({
+      url: "/session/{sessionID}/archive-preview",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Archive family
+   *
+   * Archive a session and every descendant, cancelling active runs in the subtree. Cancellation is always on; cancel_active=false is rejected with 400. A 409 returns the tagged SessionFamilyMemberError, SessionArchiveInProgressError, or SessionArchiveBlockedError body.
+   */
+  public archive<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+      cancel_active?: boolean
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "cancel_active" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionArchiveResponses, SessionArchiveErrors, ThrowOnError>({
+      url: "/session/{sessionID}/archive",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Unarchive family
+   *
+   * Restore a session and the cascade members of its family. A 409 returns the tagged SessionFamilyMemberError or SessionArchiveInProgressError body.
+   */
+  public unarchive<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<SessionUnarchiveResponses, SessionUnarchiveErrors, ThrowOnError>({
+      url: "/session/{sessionID}/unarchive",
       ...options,
       ...params,
     })

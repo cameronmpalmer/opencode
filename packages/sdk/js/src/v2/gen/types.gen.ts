@@ -235,7 +235,7 @@ export type JsonSchema = {
 export type OutputFormatJsonSchema = {
   type: "json_schema"
   schema: JsonSchema
-  retryCount?: number
+  retryCount?: number | null
 }
 
 export type OutputFormat = OutputFormatText | OutputFormatJsonSchema
@@ -2238,7 +2238,7 @@ export type GlobalSession = {
     created: number
     updated: number
     compacting?: number
-    archived?: number
+    archived?: number | null
   }
   permission?: PermissionRuleset
   revert?: {
@@ -2247,6 +2247,10 @@ export type GlobalSession = {
     snapshot?: string
     diff?: string
   }
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
   project: ProjectSummary | null
 }
 
@@ -2544,11 +2548,443 @@ export type ProviderAuthError1 = {
   }
 }
 
+export type Session1 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number | null
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
+}
+
+export type Session2 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number | null
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
+}
+
 export type NotFoundError = {
   name: "NotFoundError"
   data: {
     message: string
   }
+}
+
+export type Session3 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number | null
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
+}
+
+export type Session4 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number | null
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
+}
+
+export type SessionInvalidArchiveTimeError = {
+  _tag: "SessionInvalidArchiveTimeError"
+  sessionID: string
+  message: string
+}
+
+export type SessionFamilyMemberError = {
+  _tag: "SessionFamilyMemberError"
+  sessionID: string
+  familyRootID: string
+  message: string
+}
+
+export type SessionArchiveInProgressError = {
+  _tag: "SessionArchiveInProgressError"
+  sessionID: string
+  sessionIDs: Array<string>
+  message: string
+}
+
+export type SessionArchiveBlockedError = {
+  _tag: "SessionArchiveBlockedError"
+  sessionID: string
+  sessionIDs: Array<string>
+  message: string
+}
+
+export type FeatureDisabledError = {
+  _tag: "FeatureDisabledError"
+  feature: string
+  message: string
+}
+
+export type Session5 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number | null
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
+}
+
+export type Session6 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number | null
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
+}
+
+export type Session7 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number | null
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
 }
 
 export type TextPartInput = {
@@ -2603,6 +3039,120 @@ export type SessionBusyError = {
   _tag: "SessionBusyError"
   sessionID: string
   message: string
+}
+
+export type Session8 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number | null
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
+}
+
+export type Session9 = {
+  id: string
+  slug: string
+  projectID: string
+  workspaceID?: string
+  directory: string
+  path?: string
+  parentID?: string
+  summary?: {
+    additions: number
+    deletions: number
+    files: number
+    diffs?: Array<SnapshotFileDiff>
+  }
+  cost?: number
+  tokens?: {
+    input: number
+    output: number
+    reasoning: number
+    cache: {
+      read: number
+      write: number
+    }
+  }
+  share?: {
+    url: string
+  }
+  title: string
+  agent?: string
+  model?: {
+    id: string
+    providerID: string
+    variant?: string
+  }
+  version: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  time: {
+    created: number
+    updated: number
+    compacting?: number
+    archived?: number | null
+  }
+  permission?: PermissionRuleset
+  revert?: {
+    messageID: string
+    partID?: string
+    snapshot?: string
+    diff?: string
+  }
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
 }
 
 export type EventTuiPromptAppend = {
@@ -2798,7 +3348,7 @@ export type OutputFormat1 =
   | {
       type: "json_schema"
       schema: JsonSchema
-      retryCount?: number
+      retryCount?: number | null
     }
 
 export type SessionStatus2 = {
@@ -3925,12 +4475,16 @@ export type SessionV2Info = {
   time: {
     created: number
     updated: number
-    archived?: number
+    archived?: number | null
   }
   title: string
   location: LocationRef
   subpath?: string
   revert?: RevertState
+  familyArchiveID?: string | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
 }
 
 export type PromptInputFileAttachment = {
@@ -9469,7 +10023,7 @@ export type SessionListResponses = {
   /**
    * List of sessions
    */
-  200: Array<Session>
+  200: Array<Session1>
 }
 
 export type SessionListResponse = SessionListResponses[keyof SessionListResponses]
@@ -9511,7 +10065,7 @@ export type SessionCreateResponses = {
   /**
    * Successfully created session
    */
-  200: Session
+  200: Session3
 }
 
 export type SessionCreateResponse = SessionCreateResponses[keyof SessionCreateResponses]
@@ -9609,7 +10163,7 @@ export type SessionGetResponses = {
   /**
    * Get session
    */
-  200: Session
+  200: Session2
 }
 
 export type SessionGetResponse = SessionGetResponses[keyof SessionGetResponses]
@@ -9622,7 +10176,7 @@ export type SessionUpdateData = {
     }
     permission?: PermissionRuleset
     time?: {
-      archived?: number
+      archived?: number | null
     }
   }
   path: {
@@ -9637,13 +10191,17 @@ export type SessionUpdateData = {
 
 export type SessionUpdateErrors = {
   /**
-   * BadRequest | InvalidRequestError
+   * BadRequest | SessionInvalidArchiveTimeError | InvalidRequestError
    */
-  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+  400: EffectHttpApiErrorBadRequest | SessionInvalidArchiveTimeError | InvalidRequestError
   /**
    * NotFoundError
    */
   404: NotFoundError
+  /**
+   * SessionFamilyMemberError | SessionArchiveInProgressError | SessionArchiveBlockedError
+   */
+  409: SessionFamilyMemberError | SessionArchiveInProgressError | SessionArchiveBlockedError
 }
 
 export type SessionUpdateError = SessionUpdateErrors[keyof SessionUpdateErrors]
@@ -9652,7 +10210,7 @@ export type SessionUpdateResponses = {
   /**
    * Successfully updated session
    */
-  200: Session
+  200: Session4
 }
 
 export type SessionUpdateResponse = SessionUpdateResponses[keyof SessionUpdateResponses]
@@ -9686,7 +10244,7 @@ export type SessionChildrenResponses = {
   /**
    * List of children
    */
-  200: Array<Session>
+  200: Array<Session1>
 }
 
 export type SessionChildrenResponse = SessionChildrenResponses[keyof SessionChildrenResponses]
@@ -9924,6 +10482,137 @@ export type SessionMessageResponses = {
 
 export type SessionMessageResponse = SessionMessageResponses[keyof SessionMessageResponses]
 
+export type SessionArchivePreviewData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/archive-preview"
+}
+
+export type SessionArchivePreviewErrors = {
+  /**
+   * BadRequest | SessionInvalidArchiveTimeError | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | SessionInvalidArchiveTimeError | InvalidRequestError
+  /**
+   * NotFoundError | FeatureDisabledError
+   */
+  404: NotFoundError | FeatureDisabledError
+  /**
+   * SessionFamilyMemberError | SessionArchiveInProgressError | SessionArchiveBlockedError
+   */
+  409: SessionFamilyMemberError | SessionArchiveInProgressError | SessionArchiveBlockedError
+}
+
+export type SessionArchivePreviewError = SessionArchivePreviewErrors[keyof SessionArchivePreviewErrors]
+
+export type SessionArchivePreviewResponses = {
+  /**
+   * Archive preview
+   */
+  200: {
+    root_id: string
+    descendant_count: number
+    active_count: number
+    active_session_ids: Array<string>
+  }
+}
+
+export type SessionArchivePreviewResponse = SessionArchivePreviewResponses[keyof SessionArchivePreviewResponses]
+
+export type SessionArchiveData = {
+  body?: {
+    cancel_active?: boolean
+  }
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/archive"
+}
+
+export type SessionArchiveErrors = {
+  /**
+   * BadRequest | SessionInvalidArchiveTimeError | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | SessionInvalidArchiveTimeError | InvalidRequestError
+  /**
+   * NotFoundError | FeatureDisabledError
+   */
+  404: NotFoundError | FeatureDisabledError
+  /**
+   * SessionFamilyMemberError | SessionArchiveInProgressError | SessionArchiveBlockedError
+   */
+  409: SessionFamilyMemberError | SessionArchiveInProgressError | SessionArchiveBlockedError
+}
+
+export type SessionArchiveError = SessionArchiveErrors[keyof SessionArchiveErrors]
+
+export type SessionArchiveResponses = {
+  /**
+   * Archived family
+   */
+  200: {
+    root_id: string
+    archived_ids: Array<string>
+    already_archived_ids: Array<string>
+    cancelled_ids: Array<string>
+    archive_time: number
+  }
+}
+
+export type SessionArchiveResponse = SessionArchiveResponses[keyof SessionArchiveResponses]
+
+export type SessionUnarchiveData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/unarchive"
+}
+
+export type SessionUnarchiveErrors = {
+  /**
+   * BadRequest | SessionInvalidArchiveTimeError | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | SessionInvalidArchiveTimeError | InvalidRequestError
+  /**
+   * NotFoundError
+   */
+  404: NotFoundError
+  /**
+   * SessionFamilyMemberError | SessionArchiveInProgressError | SessionArchiveBlockedError
+   */
+  409: SessionFamilyMemberError | SessionArchiveInProgressError | SessionArchiveBlockedError
+}
+
+export type SessionUnarchiveError = SessionUnarchiveErrors[keyof SessionUnarchiveErrors]
+
+export type SessionUnarchiveResponses = {
+  /**
+   * Unarchived family
+   */
+  200: {
+    root_id: string
+    restored_ids: Array<string>
+    still_archived_ids: Array<string>
+  }
+}
+
+export type SessionUnarchiveResponse = SessionUnarchiveResponses[keyof SessionUnarchiveResponses]
+
 export type SessionForkData = {
   body?: {
     messageID?: string
@@ -9955,7 +10644,7 @@ export type SessionForkResponses = {
   /**
    * 200
    */
-  200: Session
+  200: Session5
 }
 
 export type SessionForkResponse = SessionForkResponses[keyof SessionForkResponses]
@@ -10061,7 +10750,7 @@ export type SessionUnshareResponses = {
   /**
    * Successfully unshared session
    */
-  200: Session
+  200: Session7
 }
 
 export type SessionUnshareResponse = SessionUnshareResponses[keyof SessionUnshareResponses]
@@ -10099,7 +10788,7 @@ export type SessionShareResponses = {
   /**
    * Successfully shared session
    */
-  200: Session
+  200: Session6
 }
 
 export type SessionShareResponse = SessionShareResponses[keyof SessionShareResponses]
@@ -10328,7 +11017,7 @@ export type SessionRevertResponses = {
   /**
    * Updated session
    */
-  200: Session
+  200: Session8
 }
 
 export type SessionRevertResponse = SessionRevertResponses[keyof SessionRevertResponses]
@@ -10366,7 +11055,7 @@ export type SessionUnrevertResponses = {
   /**
    * Updated session
    */
-  200: Session
+  200: Session9
 }
 
 export type SessionUnrevertResponse = SessionUnrevertResponses[keyof SessionUnrevertResponses]
@@ -11071,8 +11760,8 @@ export type ExperimentalWorkspaceCreateData = {
   body?: {
     id?: string
     type: string
-    branch?: string | null
-    extra?: unknown | null
+    branch?: string | null | null
+    extra?: unknown | null | null
   }
   path?: never
   query?: {
