@@ -7,6 +7,7 @@ import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Database } from "@opencode-ai/core/database/database"
+import { SessionArchiveGuardTable } from "@opencode-ai/core/session/sql"
 import { InstanceBootstrap as InstanceBootstrapService } from "../../src/project/bootstrap-service"
 import { InstanceStore } from "../../src/project/instance-store"
 import { Project } from "../../src/project/project"
@@ -63,7 +64,12 @@ const request = (path: string, init?: RequestInit) => {
 const pathFor = (path: string, params: Record<string, string>) =>
   Object.entries(params).reduce((result, [key, value]) => result.replace(`:${key}`, value), path)
 
-const post = (path: string, headers: Record<string, string>) => request(path, { method: "POST", headers })
+const post = (path: string, headers: Record<string, string>, body?: unknown) =>
+  request(path, {
+    method: "POST",
+    headers: body === undefined ? headers : { ...headers, "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
 const patch = (path: string, headers: Record<string, string>, body: unknown) =>
   request(path, {
     method: "PATCH",
@@ -146,6 +152,43 @@ describe("family archive HTTP API", () => {
     }),
   )
 
+  enabled.instance("preview of a cascade member returns 409 with the family root", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const headers = { "x-opencode-directory": test.directory }
+      const session = yield* Session.Service
+      const family = yield* seedFamily(session)
+      yield* session.archiveSubtree({ sessionID: family.parent.id })
+
+      const response = yield* request(pathFor(SessionPaths.archivePreview, { sessionID: family.child.id }), {
+        headers,
+      })
+      expect(response.status).toBe(409)
+      const body = (yield* response.json) as Record<string, unknown>
+      expect(body._tag).toBe("SessionFamilyMemberError")
+      expect(body.familyRootID).toBe(family.parent.id)
+    }),
+  )
+
+  enabled.instance("rejects cancel_active false and accepts no body, {}, or true", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const headers = { "x-opencode-directory": test.directory }
+      const session = yield* Session.Service
+
+      const rejectedFamily = yield* seedFamily(session)
+      const rejected = yield* post(pathFor(SessionPaths.archive, { sessionID: rejectedFamily.parent.id }), headers, {
+        cancel_active: false,
+      })
+      expect(rejected.status).toBe(400)
+
+      for (const body of [undefined, {}, { cancel_active: true }]) {
+        const family = yield* seedFamily(session)
+        const response = yield* post(pathFor(SessionPaths.archive, { sessionID: family.parent.id }), headers, body)
+        expect(response.status).toBe(200)
+      }
+    }),
+  )
   enabled.instance("a cascade member returns 409 with the family root", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance
@@ -183,6 +226,30 @@ describe("family archive HTTP API", () => {
       const unarchiveResponse = yield* post(pathFor(SessionPaths.unarchive, { sessionID: family.parent.id }), headers)
       expect(unarchiveResponse.status).toBe(200)
       expect((yield* session.get(family.child.id)).time.archived).toBeUndefined()
+    }),
+  )
+
+  disabled.instance("PATCH numeric archives only the session and detaches its family", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const headers = { "x-opencode-directory": test.directory }
+      const session = yield* Session.Service
+      const family = yield* seedFamily(session)
+
+      const response = yield* patch(pathFor(SessionPaths.update, { sessionID: family.parent.id }), headers, {
+        time: { archived: family.parent.time.created },
+      })
+      expect(response.status).toBe(200)
+
+      const parent = yield* session.get(family.parent.id)
+      expect(parent.time.archived).not.toBeUndefined()
+      expect(parent.archiveCause).toBe("user")
+      expect(parent.familyArchiveID).toBeUndefined()
+      expect((yield* session.get(family.child.id)).time.archived).toBeUndefined()
+
+      const { db } = yield* Database.Service
+      const guards = yield* db.select().from(SessionArchiveGuardTable).all().pipe(Effect.orDie)
+      expect(guards).toEqual([])
     }),
   )
 

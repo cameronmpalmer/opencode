@@ -46,6 +46,23 @@ const noImportState = (db: Database.Interface["db"]) =>
     expect(guards).toEqual([])
   })
 
+const seedArchiveFields = (
+  db: Database.Interface["db"],
+  sessionID: SessionID,
+  fields: Partial<typeof SessionTable.$inferInsert>,
+) =>
+  db
+    .transaction(
+      (tx) =>
+        Effect.gen(function* () {
+          yield* tx.insert(SessionArchiveGuardTable).values({ session_id: sessionID }).onConflictDoNothing().run()
+          yield* tx.update(SessionTable).set(fields).where(eq(SessionTable.id, sessionID)).run()
+          yield* tx.delete(SessionArchiveGuardTable).where(eq(SessionArchiveGuardTable.session_id, sessionID)).run()
+        }),
+      { behavior: "immediate" },
+    )
+    .pipe(Effect.orDie)
+
 describe("family archive import", () => {
   it.instance("imports an archived session with its family fields and leaves no exemptions", () =>
     Effect.gen(function* () {
@@ -89,12 +106,11 @@ describe("family archive import", () => {
       const session = yield* SessionNs.Service
       const { db } = yield* Database.Service
       const live = yield* session.create({ title: "live" })
-      yield* db
-        .update(SessionTable)
-        .set({ time_archived: 9_999, family_archive_id: live.id, archive_cause: "user" })
-        .where(eq(SessionTable.id, live.id))
-        .run()
-        .pipe(Effect.orDie)
+      yield* seedArchiveFields(db, live.id, {
+        time_archived: 9_999,
+        family_archive_id: live.id,
+        archive_cause: "user",
+      })
       const stale = archivedInfo(live, { id: live.id, archivedAt: 1_111 })
 
       yield* writeImport(db, stale, [])
@@ -172,12 +188,11 @@ describe("family archive import", () => {
       const session = yield* SessionNs.Service
       const { db } = yield* Database.Service
       const parent = yield* session.create({ title: "parent" })
-      yield* db
-        .update(SessionTable)
-        .set({ time_archived: 7_777, family_archive_id: parent.id, archive_cause: "user" })
-        .where(eq(SessionTable.id, parent.id))
-        .run()
-        .pipe(Effect.orDie)
+      yield* seedArchiveFields(db, parent.id, {
+        time_archived: 7_777,
+        family_archive_id: parent.id,
+        archive_cause: "user",
+      })
 
       const id = SessionID.descending()
       const info: SessionNs.Info = {

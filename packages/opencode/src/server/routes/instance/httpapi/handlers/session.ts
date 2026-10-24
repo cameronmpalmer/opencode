@@ -25,6 +25,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder, HttpApiError, HttpApiSchema } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import {
+  ArchivePayload,
   CommandPayload,
   DiffQuery,
   ForkPayload,
@@ -250,8 +251,14 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       )
     })
 
-    const archive = Effect.fn("SessionHttpApi.archive")(function* (ctx: { params: { sessionID: SessionID } }) {
+    const archive = Effect.fn("SessionHttpApi.archive")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload?: typeof ArchivePayload.Type | void
+    }) {
       yield* requireFamilyArchive()
+      if (ctx.payload?.cancel_active === false) {
+        return yield* new HttpApiError.BadRequest({})
+      }
       yield* requireSession(ctx.params.sessionID)
       return yield* SessionError.mapArchiveErrors(
         session.archiveSubtree({

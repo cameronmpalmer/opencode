@@ -276,6 +276,20 @@ function applyLegacySchemaOverrides(spec: OpenApiSpec) {
   if (variants && typeof variants === "object") variants.additionalProperties = {}
   const syncInfo = schemas.SyncEventSessionUpdated?.properties?.data?.properties?.info
   if (syncInfo?.properties) makePropertiesNullable(syncInfo.properties)
+
+  // Family archive fields are intentionally nullable, not merely optional. The
+  // optional-null strip above flattens them to their non-null arm, so restore the
+  // null branch for every schema that exposes the archive surface.
+  for (const schema of Object.values(schemas)) {
+    const properties = schema.properties
+    const archived = properties?.time?.properties?.archived
+    if (!properties || !archived) continue
+    properties.time!.properties!.archived = nullable(archived)
+    for (const key of ["familyArchiveID", "archiveCause", "archiveState", "archiveStateAt"]) {
+      const value = properties[key]
+      if (value) properties[key] = nullable(value)
+    }
+  }
 }
 
 function normalizeComponentDescriptions(spec: OpenApiSpec) {
@@ -465,6 +479,22 @@ function stripOptionalNull(schema: OpenApiSchema): OpenApiSchema {
     return stripOptionalNull({ ...schema, ...constraint })
   }
   if (isEmptyObjectUnion(schema)) return { type: "object", properties: {} }
+  // `Schema.optional(Schema.NullOr(X))` generates one nested nullable union plus an
+  // outer null arm. Drop only the outer arm and keep the explicit nullable union so
+  // intentionally nullable API fields survive into the generated SDK.
+  const explicit = schema.anyOf ?? schema.oneOf
+  if (explicit?.length === 2) {
+    const nullArm = explicit.find((item) => item.type === "null")
+    const other = explicit.find((item) => item.type !== "null")
+    const inner = other?.anyOf ?? other?.oneOf
+    if (nullArm && inner?.some((item) => item.type === "null")) {
+      return {
+        ...schema,
+        ...(schema.oneOf ? { oneOf: undefined } : {}),
+        anyOf: inner.map((item) => (item.type === "null" ? item : stripOptionalNull(item))),
+      }
+    }
+  }
   const options = flattenOptions(schema.anyOf ?? schema.oneOf)
   if (options) {
     const withoutNull = options.filter((item) => item.type !== "null")

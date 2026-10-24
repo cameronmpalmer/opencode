@@ -56,6 +56,9 @@ export const UpdatePayload = Schema.Struct({
     }),
   ),
 })
+export const ArchivePayload = Schema.Struct({
+  cancel_active: Schema.optional(Schema.Boolean),
+})
 export const ForkPayload = Schema.Struct(Struct.omit(Session.ForkInput.fields, ["sessionID"]))
 export const InitPayload = Schema.Struct({
   modelID: ModelV2.ID,
@@ -270,6 +273,7 @@ export const SessionApi = HttpApi.make("session")
         HttpApiEndpoint.post("archive", SessionPaths.archive, {
           params: { sessionID: SessionID },
           query: WorkspaceRoutingQuery,
+          payload: [HttpApiSchema.NoContent, ArchivePayload],
           success: described(Session.ArchiveResult, "Archived family"),
           error: [
             HttpApiError.BadRequest,
@@ -284,7 +288,8 @@ export const SessionApi = HttpApi.make("session")
           OpenApi.annotations({
             identifier: "session.archive",
             summary: "Archive family",
-            description: "Archive a session and every descendant, cancelling active runs in the subtree.",
+            description:
+              "Archive a session and every descendant, cancelling active runs in the subtree. Cancellation is always on; cancel_active=false is rejected with 400. A 409 returns the tagged SessionFamilyMemberError, SessionArchiveInProgressError, or SessionArchiveBlockedError body.",
           }),
         ),
         HttpApiEndpoint.post("unarchive", SessionPaths.unarchive, {
@@ -303,7 +308,8 @@ export const SessionApi = HttpApi.make("session")
           OpenApi.annotations({
             identifier: "session.unarchive",
             summary: "Unarchive family",
-            description: "Restore a session and the cascade members of its family.",
+            description:
+              "Restore a session and the cascade members of its family. A 409 returns the tagged SessionFamilyMemberError or SessionArchiveInProgressError body.",
           }),
         ),
         HttpApiEndpoint.post("fork", SessionPaths.fork, {
