@@ -565,6 +565,10 @@ export const SessionInfo = Schema.Struct({
   }),
   permission: optional(PermissionV1.Ruleset),
   revert: optional(SessionRevert),
+  familyArchiveID: optional(SessionID),
+  archiveCause: optional(Schema.Literals(["user", "cascade", "migration"])),
+  archiveState: optional(Schema.Literal("archiving")),
+  archiveStateAt: optional(Timestamp),
 }).annotate({ identifier: "Session" })
 export type SessionInfo = typeof SessionInfo.Type
 

@@ -12,7 +12,14 @@ import { SessionMessage } from "./message"
 import { SessionMessageUpdater } from "./message-updater"
 import { SessionInput } from "./input"
 import { WorkspaceV2 } from "../workspace"
-import { MessageTable, PartTable, SessionInputTable, SessionMessageTable, SessionTable } from "./sql"
+import {
+  MessageTable,
+  PartTable,
+  SessionArchiveGuardTable,
+  SessionInputTable,
+  SessionMessageTable,
+  SessionTable,
+} from "./sql"
 import type { DeepMutable } from "../schema"
 
 type DatabaseService = Database.Interface["db"]
@@ -21,6 +28,16 @@ const decodeMessage = Schema.decodeUnknownSync(SessionMessage.Message)
 const encodeMessage = Schema.encodeSync(SessionMessage.Message)
 
 export class SessionAlreadyProjected extends Error {}
+
+export class SessionArchiveGuardRequired extends Error {}
+
+const archiveFields = [
+  "time_archived",
+  "family_archive_id",
+  "archive_cause",
+  "archive_state",
+  "archive_state_at",
+] as const
 
 type Usage = {
   cost: number
@@ -71,7 +88,59 @@ function sessionRow(info: SessionV1.SessionInfo): typeof SessionTable.$inferInse
     time_updated: info.time.updated,
     time_compacting: info.time.compacting,
     time_archived: info.time.archived,
+    family_archive_id: info.familyArchiveID,
+    archive_cause: info.archiveCause,
+    archive_state: info.archiveState,
+    archive_state_at: info.archiveStateAt,
   }
+}
+
+function sessionUpdate(info: SessionV1.SessionInfo): Partial<typeof SessionTable.$inferInsert> {
+  const set: Partial<typeof SessionTable.$inferInsert> = {
+    project_id: info.projectID,
+    slug: info.slug,
+    directory: info.directory,
+    title: info.title,
+    version: info.version,
+    time_created: info.time.created,
+    time_updated: info.time.updated,
+  }
+  if (info.workspaceID !== undefined) set.workspace_id = info.workspaceID
+  if (info.parentID !== undefined) set.parent_id = info.parentID
+  if (info.path !== undefined) set.path = info.path
+  if (info.share !== undefined) set.share_url = info.share.url
+  if (info.summary !== undefined) {
+    if (info.summary.additions !== undefined) set.summary_additions = info.summary.additions
+    if (info.summary.deletions !== undefined) set.summary_deletions = info.summary.deletions
+    if (info.summary.files !== undefined) set.summary_files = info.summary.files
+    if (info.summary.diffs !== undefined) set.summary_diffs = [...info.summary.diffs]
+  }
+  if (info.metadata !== undefined) set.metadata = info.metadata
+  if (info.cost !== undefined) set.cost = info.cost
+  if (info.tokens !== undefined) {
+    set.tokens_input = info.tokens.input
+    set.tokens_output = info.tokens.output
+    set.tokens_reasoning = info.tokens.reasoning
+    set.tokens_cache_read = info.tokens.cache.read
+    set.tokens_cache_write = info.tokens.cache.write
+  }
+  if (info.revert !== undefined) {
+    set.revert = { ...info.revert, messageID: SessionMessage.ID.make(info.revert.messageID) }
+  }
+  if (info.permission !== undefined) set.permission = [...info.permission]
+  if (info.agent !== undefined) set.agent = info.agent
+  if (info.model !== undefined) set.model = info.model
+  if (info.time.compacting !== undefined) set.time_compacting = info.time.compacting
+  if (info.time.archived !== undefined) set.time_archived = info.time.archived
+  if (info.familyArchiveID !== undefined) set.family_archive_id = info.familyArchiveID
+  if (info.archiveCause !== undefined) set.archive_cause = info.archiveCause
+  if (info.archiveState !== undefined) set.archive_state = info.archiveState
+  if (info.archiveStateAt !== undefined) set.archive_state_at = info.archiveStateAt
+  return set
+}
+
+function archiveFieldChanges(set: Partial<typeof SessionTable.$inferInsert>) {
+  return archiveFields.filter((field) => set[field] !== undefined)
 }
 
 function messageData(
@@ -232,12 +301,47 @@ const layer = Layer.effectDiscard(
       }),
     )
     yield* events.project(SessionV1.Event.Updated, (event) =>
-      db
-        .update(SessionTable)
-        .set(sessionRow(event.data.info))
-        .where(eq(SessionTable.id, event.data.sessionID))
-        .run()
-        .pipe(Effect.orDie),
+      Effect.gen(function* () {
+        const set = sessionUpdate(event.data.info)
+        const changedArchiveFields = archiveFieldChanges(set)
+        if (changedArchiveFields.length > 0) {
+          const current = yield* db
+            .select({
+              time_archived: SessionTable.time_archived,
+              family_archive_id: SessionTable.family_archive_id,
+              archive_cause: SessionTable.archive_cause,
+              archive_state: SessionTable.archive_state,
+              archive_state_at: SessionTable.archive_state_at,
+            })
+            .from(SessionTable)
+            .where(eq(SessionTable.id, event.data.sessionID))
+            .get()
+            .pipe(Effect.orDie)
+          const changed = changedArchiveFields.some((field) => (current?.[field] ?? null) !== (set[field] ?? null))
+          if (changed) {
+            const guard = yield* db
+              .select({ session_id: SessionArchiveGuardTable.session_id })
+              .from(SessionArchiveGuardTable)
+              .where(eq(SessionArchiveGuardTable.session_id, event.data.sessionID))
+              .get()
+              .pipe(Effect.orDie)
+            if (!guard) {
+              return yield* Effect.die(
+                new SessionArchiveGuardRequired(
+                  `Archive field change requires a session_archive_guard row: ${event.data.sessionID}`,
+                ),
+              )
+            }
+          }
+        }
+        if (Object.keys(set).length === 0) return
+        yield* db
+          .update(SessionTable)
+          .set(set)
+          .where(eq(SessionTable.id, event.data.sessionID))
+          .run()
+          .pipe(Effect.orDie)
+      }),
     )
     yield* events.project(SessionEvent.Moved, (event) =>
       Effect.gen(function* () {
