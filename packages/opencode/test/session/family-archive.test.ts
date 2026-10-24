@@ -5,7 +5,7 @@ import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionRunLeaseTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
-import { eq } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 import { Effect } from "effect"
 import { Project } from "@/project/project"
 import { Session as SessionNs } from "@/session/session"
@@ -178,12 +178,157 @@ describe("family archive", () => {
     Effect.gen(function* () {
       const session = yield* SessionNs.Service
       const family = yield* seedFamily(session)
-      const preview = yield* session.archivePreview({ sessionID: family.P.id })
+      const preview = yield* session.archivePreview({
+        sessionID: family.P.id,
+        active: Effect.succeed(new Set([family.P.id])),
+      })
 
       expect(preview.root_id).toBe(family.P.id)
       expect(preview.descendant_count).toBe(2)
-      expect(preview.active_count).toBe(0)
-      expect(preview.active_session_ids).toEqual([])
+      expect(preview.active_count).toBe(1)
+      expect(preview.active_session_ids).toEqual([family.P.id])
+    }),
+  )
+
+  it.instance("archive and unarchive change archive fields only while a guard row exists", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const { db } = yield* Database.Service
+      yield* db
+        .run(
+          sql.raw(`
+            CREATE TRIGGER test_archive_guard
+            BEFORE UPDATE ON session
+            WHEN (
+              OLD.time_archived IS NOT NEW.time_archived OR
+              OLD.family_archive_id IS NOT NEW.family_archive_id OR
+              OLD.archive_cause IS NOT NEW.archive_cause OR
+              OLD.archive_state IS NOT NEW.archive_state OR
+              OLD.archive_state_at IS NOT NEW.archive_state_at
+            ) AND NOT EXISTS (SELECT 1 FROM session_archive_guard WHERE session_id = NEW.id)
+            BEGIN
+              SELECT RAISE(ABORT, 'archive guard required');
+            END
+          `),
+        )
+        .pipe(Effect.orDie)
+      yield* Effect.addFinalizer(() => db.run(sql.raw("DROP TRIGGER IF EXISTS test_archive_guard")).pipe(Effect.orDie))
+
+      const family = yield* seedFamily(session)
+      yield* session.archiveSubtree({ sessionID: family.P.id })
+      yield* session.unarchiveSubtree({ sessionID: family.P.id })
+
+      const rows = yield* readFamily(session, family)
+      expect(rows.P.time.archived).toBeUndefined()
+      expect(rows.C.archiveState).toBeUndefined()
+    }),
+  )
+
+  it.instance("a live lease timeout fails closed, clears markers, and restores cancel_requested", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const { db } = yield* Database.Service
+      const family = yield* seedFamily(session)
+      yield* db
+        .insert(SessionRunLeaseTable)
+        .values({ session_id: family.C.id, lease_id: "lease-timeout", heartbeat_at: Date.now(), cancel_requested: 1 })
+        .run()
+        .pipe(Effect.orDie)
+
+      const exit = yield* Effect.exit(session.archiveSubtree({ sessionID: family.P.id, waitTimeoutMs: 60 }))
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") {
+        expect(JSON.stringify(exit.cause)).toContain("SessionArchiveBlockedError")
+      }
+
+      const rows = yield* readFamily(session, family)
+      expect(rows.P.time.archived).toBeUndefined()
+      expect(rows.C.time.archived).toBeUndefined()
+      expect(rows.G.time.archived).toBeUndefined()
+      expect(rows.P.archiveState).toBeUndefined()
+      expect(rows.P.archiveStateAt).toBeUndefined()
+      expect(rows.C.archiveState).toBeUndefined()
+
+      const lease = yield* db
+        .select()
+        .from(SessionRunLeaseTable)
+        .where(eq(SessionRunLeaseTable.session_id, family.C.id))
+        .get()
+        .pipe(Effect.orDie)
+      expect(lease?.cancel_requested).toBe(1)
+    }),
+  )
+
+  it.instance("archiving an already archived family is idempotent", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const family = yield* seedFamily(session)
+      const first = yield* session.archiveSubtree({ sessionID: family.P.id })
+      const second = yield* session.archiveSubtree({ sessionID: family.P.id })
+
+      expect(second.archived_ids).toEqual([])
+      expect(second.already_archived_ids).toEqual(expect.arrayContaining([family.P.id, family.C.id, family.G.id]))
+      expect(second.archive_time).toBe(first.archive_time)
+    }),
+  )
+
+  it.instance("a nested independent owner keeps its own archive time for its descendants", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const family = yield* seedFamily(session)
+      const childTime = family.C.time.created + 100
+
+      yield* session.setArchived({ sessionID: family.C.id, time: childTime })
+      const result = yield* session.archiveSubtree({
+        sessionID: family.P.id,
+        archivedAt: family.P.time.created,
+      })
+
+      expect(result.archive_time).toBe(family.P.time.created)
+      const rows = yield* readFamily(session, family)
+      expect(rows.P.time.archived).toBe(family.P.time.created)
+      expect(rows.C.time.archived).toBe(childTime)
+      expect(rows.G.time.archived).toBe(childTime)
+      expect(rows.G.familyArchiveID).toBe(family.C.id)
+    }),
+  )
+
+  it.instance("rejects an archive time before session creation and clamps a future time", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const family = yield* seedFamily(session)
+
+      const before = yield* Effect.exit(
+        session.archiveSubtree({ sessionID: family.P.id, archivedAt: family.P.time.created - 1 }),
+      )
+      expect(before._tag).toBe("Failure")
+      if (before._tag === "Failure") {
+        expect(JSON.stringify(before.cause)).toContain("SessionInvalidArchiveTimeError")
+      }
+
+      const started = Date.now()
+      const result = yield* session.archiveSubtree({
+        sessionID: family.P.id,
+        archivedAt: Date.now() + 60_000,
+      })
+      const finished = Date.now()
+      expect(result.archive_time).toBeGreaterThanOrEqual(started)
+      expect(result.archive_time).toBeLessThanOrEqual(finished)
+    }),
+  )
+
+  it.instance("rejects unarchiving a cascade member and names the family root", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const family = yield* seedFamily(session)
+      yield* session.archiveSubtree({ sessionID: family.P.id })
+
+      const exit = yield* Effect.exit(session.unarchiveSubtree({ sessionID: family.C.id }))
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") {
+        expect(JSON.stringify(exit.cause)).toContain("SessionFamilyMemberError")
+        expect(JSON.stringify(exit.cause)).toContain(family.P.id)
+      }
     }),
   )
 })

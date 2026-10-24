@@ -2,15 +2,23 @@ import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
-import { SessionArchiveGuardTable, SessionImportExemptTable, SessionTable } from "@opencode-ai/core/session/sql"
+import {
+  MessageTable,
+  PartTable,
+  SessionArchiveGuardTable,
+  SessionImportExemptTable,
+  SessionTable,
+} from "@opencode-ai/core/session/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { eq } from "drizzle-orm"
 import { Effect } from "effect"
 import { Project } from "@/project/project"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import { Session as SessionNs } from "@/session/session"
-import { SessionID } from "@/session/schema"
-import { importExemptionMs, writeImport } from "@/cli/cmd/import"
+import { MessageID, PartID, SessionID } from "@/session/schema"
+import { importExemptionMs, writeImport, type ExportData } from "@/cli/cmd/import"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(
@@ -103,6 +111,94 @@ describe("family archive import", () => {
     Effect.sync(() => {
       expect(importExemptionMs({})).toBe(1_800_000)
       expect(importExemptionMs({ OPENCODE_SESSION_IMPORT_EXEMPTION_MS: "5000" })).toBe(5_000)
+    }),
+  )
+
+  it.instance("imports messages and parts for an archived session", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const { db } = yield* Database.Service
+      const source = yield* session.create({ title: "source" })
+      const message = yield* session.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID: source.id,
+        agent: "build",
+        model: { providerID: ProviderV2.ID.make("test"), modelID: ModelV2.ID.make("test") },
+        time: { created: Date.now() },
+      })
+      const part = yield* session.updatePart({
+        id: PartID.ascending(),
+        sessionID: source.id,
+        messageID: message.id,
+        type: "text",
+        text: "imported text",
+      })
+      const id = SessionID.descending()
+      const info = archivedInfo(source, { id, archivedAt: 3_000 })
+      const importedMessage = { ...message, id: MessageID.ascending(), sessionID: id }
+      const importedPart = {
+        ...part,
+        id: PartID.ascending(),
+        sessionID: id,
+        messageID: importedMessage.id,
+      }
+      const messages = [{ info: importedMessage, parts: [importedPart] }] as unknown as ExportData["messages"]
+
+      yield* writeImport(db, info, messages)
+
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, id)).get().pipe(Effect.orDie)
+      expect(row?.time_archived).toBe(3_000)
+      const storedMessage = yield* db
+        .select()
+        .from(MessageTable)
+        .where(eq(MessageTable.session_id, id))
+        .get()
+        .pipe(Effect.orDie)
+      expect(storedMessage?.id).toBe(importedMessage.id)
+      const storedParts = yield* db
+        .select()
+        .from(PartTable)
+        .where(eq(PartTable.session_id, id))
+        .all()
+        .pipe(Effect.orDie)
+      expect(storedParts.map((item) => item.id)).toEqual([importedPart.id])
+      yield* noImportState(db)
+    }),
+  )
+
+  it.instance("imports an archived child under an archived parent", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const { db } = yield* Database.Service
+      const parent = yield* session.create({ title: "parent" })
+      yield* db
+        .update(SessionTable)
+        .set({ time_archived: 7_777, family_archive_id: parent.id, archive_cause: "user" })
+        .where(eq(SessionTable.id, parent.id))
+        .run()
+        .pipe(Effect.orDie)
+
+      const id = SessionID.descending()
+      const info: SessionNs.Info = {
+        ...parent,
+        id,
+        parentID: parent.id,
+        time: { ...parent.time, archived: 7_777 },
+        familyArchiveID: parent.id,
+        archiveCause: "cascade",
+        archiveState: null,
+        archiveStateAt: null,
+      }
+
+      yield* writeImport(db, info, [])
+
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, id)).get().pipe(Effect.orDie)
+      expect(row?.parent_id).toBe(parent.id)
+      expect(row?.time_archived).toBe(7_777)
+      expect(row?.family_archive_id).toBe(parent.id)
+      expect(row?.archive_cause).toBe("cascade")
+      yield* noImportState(db)
     }),
   )
 })

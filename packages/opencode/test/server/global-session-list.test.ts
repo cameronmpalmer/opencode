@@ -54,6 +54,7 @@ describe("session.listGlobal", () => {
     () =>
       Effect.gen(function* () {
         const archived = yield* withSession({ title: "archived-session" })
+        const live = yield* withSession({ title: "live-session" })
 
         yield* SessionNs.Service.use((session) => session.setArchived({ sessionID: archived.id, time: Date.now() }))
 
@@ -68,6 +69,8 @@ describe("session.listGlobal", () => {
         const allIds = allSessions.map((session) => session.id)
 
         expect(allIds).toContain(archived.id)
+        expect(allIds).not.toContain(live.id)
+        expect(allSessions.every((session) => session.time.archived !== undefined)).toBe(true)
       }),
     { git: true },
   )
