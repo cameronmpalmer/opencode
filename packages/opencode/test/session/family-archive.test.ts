@@ -2,18 +2,27 @@ import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionArchiveGuardTable, SessionRunLeaseTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { and, eq, sql } from "drizzle-orm"
-import { Effect } from "effect"
+import { Cause, Effect } from "effect"
 import { Project } from "@/project/project"
 import { Session as SessionNs } from "@/session/session"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(
   LayerNode.compile(
-    LayerNode.group([SessionNs.node, SessionProjector.node, Project.node, CrossSpawnSpawner.node, Database.node]),
+    LayerNode.group([
+      SessionNs.node,
+      SessionProjector.node,
+      Project.node,
+      CrossSpawnSpawner.node,
+      Database.node,
+      EventV2Bridge.node,
+    ]),
     [[SessionExecution.node, SessionExecution.noopLayer]],
   ),
 )
@@ -480,24 +489,28 @@ describe("family archive", () => {
   it.instance("a final-transaction failure clears markers and surfaces the original error", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service
+      const events = yield* EventV2Bridge.Service
       const { db } = yield* Database.Service
       const family = yield* seedFamily(session)
-      yield* db
-        .run(
-          sql.raw(`
-            CREATE TRIGGER test_final_fault
-            BEFORE INSERT ON family_archive_migration
-            WHEN NEW.root_session_id = '${family.P.id}'
-            BEGIN
-              SELECT RAISE(ABORT, 'injected final failure');
-            END
-          `),
-        )
-        .pipe(Effect.orDie)
-      yield* Effect.addFinalizer(() => db.run(sql.raw("DROP TRIGGER IF EXISTS test_final_fault")).pipe(Effect.orDie))
+
+      // Fail only the final archive publish (the one carrying time.archived), leaving
+      // the step-1 marker publish intact so cleanup has a marker to clear.
+      yield* events.project(SessionV1.Event.Updated, (event) => {
+        const info = (event.data as { info?: SessionNs.Info }).info
+        if (info?.id === family.P.id && typeof info.time.archived === "number") {
+          return Effect.die(new Error("injected final failure"))
+        }
+        return Effect.void
+      })
 
       const exit = yield* Effect.exit(session.archiveSubtree({ sessionID: family.P.id }))
       expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") {
+        const messages = Cause.prettyErrors(exit.cause)
+          .map((error) => error.message)
+          .join("\n")
+        expect(messages).toContain("injected final failure")
+      }
 
       const rows = yield* readFamily(session, family)
       expect(rows.P.time.archived).toBeUndefined()
