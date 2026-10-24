@@ -62,7 +62,10 @@ const layer = Layer.effect(
     )
     yield* Effect.addFinalizer(() => unsubscribe)
 
-    return Service.of({ ...events, publish })
+    const withDeferredNotifications: EventV2.Interface["withDeferredNotifications"] = (effect) =>
+      events.withDeferredNotifications(effect)
+
+    return Service.of({ ...events, publish, withDeferredNotifications })
   }),
 )
 

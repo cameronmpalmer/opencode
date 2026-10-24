@@ -1,6 +1,6 @@
 export * as EventV2 from "./event"
 
-import { Cause, Context, Effect, Layer, Option, PubSub, Queue, Schema, Stream } from "effect"
+import { Cause, Context, Effect, Exit, Layer, Option, PubSub, Queue, Ref, Schema, Stream } from "effect"
 import { Event } from "@opencode-ai/schema/event"
 import type { Data, Definition, Payload } from "@opencode-ai/schema/event"
 import { and, asc, eq, gt, inArray } from "drizzle-orm"
@@ -145,7 +145,19 @@ export interface Interface {
   ) => Effect.Effect<string | undefined>
   readonly remove: (aggregateID: string) => Effect.Effect<void>
   readonly claim: (aggregateID: string, ownerID: string) => Effect.Effect<void>
+  /**
+   * Hold back every notification produced inside `effect` until it succeeds, then
+   * flush them in order. Notifications are discarded when the effect fails or is
+   * interrupted, so a transaction that rolls back emits nothing to clients.
+   */
+  readonly withDeferredNotifications: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 }
+
+// Effect v4 beta has no FiberRef module; a Context.Reference overridden with
+// provideService gives the same fiber-local, automatically-restored semantics.
+const DeferredNotifications = Context.Reference<Ref.Ref<Payload[]> | undefined>("EventV2/DeferredNotifications", {
+  defaultValue: () => undefined,
+})
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Event") {}
 
@@ -403,7 +415,7 @@ export const layerWith = (options?: LayerOptions) =>
           ),
         )
 
-      function notify(event: Payload, isolateListeners: boolean) {
+      function emit(event: Payload, isolateListeners: boolean) {
         return Effect.gen(function* () {
           yield* Effect.forEach(
             listeners,
@@ -415,6 +427,37 @@ export const layerWith = (options?: LayerOptions) =>
           yield* PubSub.publish(pubsub.all, event)
         })
       }
+
+      function notify(event: Payload, isolateListeners: boolean) {
+        return Effect.gen(function* () {
+          const deferred = yield* DeferredNotifications
+          if (deferred) {
+            yield* Ref.update(deferred, (events) => [...events, event])
+            return
+          }
+          yield* emit(event, isolateListeners)
+        })
+      }
+
+      const withDeferredNotifications = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+        Effect.acquireUseRelease(
+          Effect.uninterruptible(Ref.make<Payload[]>([])),
+          (queue) =>
+            Effect.provideService(effect, DeferredNotifications, queue).pipe(
+              Effect.onExit((exit) =>
+                Exit.isSuccess(exit)
+                  ? Effect.uninterruptible(
+                      Ref.get(queue).pipe(
+                        Effect.flatMap((events) =>
+                          Effect.forEach(events, (event) => emit(event, true), { discard: true }),
+                        ),
+                      ),
+                    )
+                  : Effect.void,
+              ),
+            ),
+          () => Effect.void,
+        )
 
       function publish<D extends Definition>(definition: D, data: Data<D>, options?: PublishOptions) {
         return Effect.gen(function* () {
@@ -630,6 +673,7 @@ export const layerWith = (options?: LayerOptions) =>
         replayAll,
         remove,
         claim,
+        withDeferredNotifications,
       })
     }),
   )

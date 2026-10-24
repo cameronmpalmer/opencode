@@ -1121,4 +1121,63 @@ describe("EventV2", () => {
       expect(received[0]?.data).toEqual(durableData(aggregateID, "replayed"))
     }),
   )
+
+  it.effect("defers notifications until the enclosing transaction commits", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const observed = new Array<string>()
+      const unsubscribe = yield* events.listen((event) =>
+        Effect.sync(() => {
+          if (event.type === SyncMessage.type) observed.push(event.type)
+        }),
+      )
+      yield* Effect.addFinalizer(() => unsubscribe)
+
+      const aggregateID = EventV2.ID.create()
+      yield* events.withDeferredNotifications(
+        db.transaction(
+          () =>
+            Effect.gen(function* () {
+              yield* events.publish(SyncMessage, { id: aggregateID, text: "deferred" })
+              expect(observed).toEqual([])
+            }),
+          { behavior: "immediate" },
+        ),
+      )
+
+      expect(observed).toEqual([SyncMessage.type])
+    }),
+  )
+
+  it.effect("discards notifications from a rolled-back transaction", () =>
+    Effect.gen(function* () {
+      const events = yield* EventV2.Service
+      const { db } = yield* Database.Service
+      const observed = new Array<string>()
+      const unsubscribe = yield* events.listen((event) =>
+        Effect.sync(() => {
+          if (event.type === SyncMessage.type) observed.push(event.type)
+        }),
+      )
+      yield* Effect.addFinalizer(() => unsubscribe)
+
+      const aggregateID = EventV2.ID.create()
+      const exit = yield* Effect.exit(
+        events.withDeferredNotifications(
+          db.transaction(
+            () =>
+              Effect.gen(function* () {
+                yield* events.publish(SyncMessage, { id: aggregateID, text: "rolled back" })
+                return yield* Effect.fail(new Error("rollback"))
+              }),
+            { behavior: "immediate" },
+          ),
+        ),
+      )
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(observed).toEqual([])
+    }),
+  )
 })
