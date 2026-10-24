@@ -1,17 +1,20 @@
 import { describe, expect } from "bun:test"
-import { Effect, Exit } from "effect"
+import { Cause, Effect, Exit } from "effect"
 import { eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { EventV2 } from "@opencode-ai/core/event"
+import { EventSequenceTable, EventTable } from "@opencode-ai/core/event/sql"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionSchema } from "@opencode-ai/core/session/schema"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { SessionMessage } from "@opencode-ai/core/session/message"
 import { SessionArchiveGuardTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, EventV2.node, SessionProjector.node])))
@@ -128,6 +131,21 @@ describe("family archive projector", () => {
     }),
   )
 
+  it.effect("an old payload clears revert and workspace on omission", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow({
+        revert: { messageID: SessionMessage.ID.make("msg_revert") },
+        workspace_id: WorkspaceV2.ID.make("wrk_test"),
+      })
+
+      yield* projectUpdated({ title: "new title", time: { created: 1, updated: 2 } })
+
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
+      expect(row?.revert).toBeNull()
+      expect(row?.workspace_id).toBeNull()
+    }),
+  )
+
   it.effect("refuses an archive-field update without a guard row", () =>
     Effect.gen(function* () {
       const db = yield* seedArchivedRow()
@@ -135,8 +153,14 @@ describe("family archive projector", () => {
       const exit = yield* projectUpdated({ familyArchiveID: sessionID }).pipe(Effect.exit)
 
       expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      const defect = exit.cause.reasons.find(Cause.isDieReason)?.defect
+      expect(defect).toBeInstanceOf(SessionProjector.SessionArchiveGuardRequired)
+
       const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
       expect(row?.family_archive_id).toBeNull()
+      expect(yield* db.select().from(EventTable).all()).toHaveLength(0)
+      expect(yield* db.select().from(EventSequenceTable).all()).toHaveLength(0)
     }),
   )
 
@@ -158,6 +182,34 @@ describe("family archive projector", () => {
       expect(row?.archive_cause).toBe("user")
       expect(row?.archive_state).toBe("archiving")
       expect(row?.archive_state_at).toBe(2000)
+      expect(row?.time_archived).toBe(1000)
+    }),
+  )
+
+  it.effect("explicit null archive fields clear them when the transaction holds a guard row", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow({
+        time_archived: 1000,
+        family_archive_id: sessionID,
+        archive_cause: "user",
+        archive_state: "archiving",
+        archive_state_at: 2000,
+      })
+      yield* db.insert(SessionArchiveGuardTable).values({ session_id: sessionID }).run()
+
+      yield* projectUpdated({
+        familyArchiveID: null,
+        archiveCause: null,
+        archiveState: null,
+        archiveStateAt: null,
+        time: { created: 1, updated: 2, archived: 1000 },
+      })
+
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
+      expect(row?.family_archive_id).toBeNull()
+      expect(row?.archive_cause).toBeNull()
+      expect(row?.archive_state).toBeNull()
+      expect(row?.archive_state_at).toBeNull()
       expect(row?.time_archived).toBe(1000)
     }),
   )

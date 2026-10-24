@@ -102,10 +102,11 @@ function sessionUpdate(info: SessionV1.SessionInfo): Partial<typeof SessionTable
     directory: info.directory,
     title: info.title,
     version: info.version,
+    workspace_id: info.workspaceID ?? null,
     time_created: info.time.created,
     time_updated: info.time.updated,
+    revert: info.revert ? { ...info.revert, messageID: SessionMessage.ID.make(info.revert.messageID) } : null,
   }
-  if (info.workspaceID !== undefined) set.workspace_id = info.workspaceID
   if (info.parentID !== undefined) set.parent_id = info.parentID
   if (info.path !== undefined) set.path = info.path
   if (info.share !== undefined) set.share_url = info.share.url
@@ -123,9 +124,6 @@ function sessionUpdate(info: SessionV1.SessionInfo): Partial<typeof SessionTable
     set.tokens_reasoning = info.tokens.reasoning
     set.tokens_cache_read = info.tokens.cache.read
     set.tokens_cache_write = info.tokens.cache.write
-  }
-  if (info.revert !== undefined) {
-    set.revert = { ...info.revert, messageID: SessionMessage.ID.make(info.revert.messageID) }
   }
   if (info.permission !== undefined) set.permission = [...info.permission]
   if (info.agent !== undefined) set.agent = info.agent
