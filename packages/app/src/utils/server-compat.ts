@@ -259,14 +259,19 @@ function createV1Api(input: CompatibleInput): CompatibleApi {
         await legacy(value).session.update({ sessionID: value.sessionID, title: value.title })
       },
       async archivePreview(value) {
-        // V1 servers predate family archive. Preview reports an empty subtree so
-        // callers keep the existing single-session confirmation.
-        return {
-          root_id: value.sessionID,
-          descendant_count: 0,
-          active_count: 0,
-          active_session_ids: [],
-        }
+        // V1 servers predate family archive. Signal feature-disabled so callers
+        // take the per-session legacy fallback instead of claiming a family
+        // preview that the server cannot honor.
+        throw new Error("Family archive is unavailable", {
+          cause: {
+            status: 404,
+            body: {
+              _tag: "FeatureDisabledError",
+              feature: "familyArchive",
+              message: "Family archive is unavailable",
+            },
+          },
+        })
       },
       async archive(value) {
         const archiveTime = Date.now()

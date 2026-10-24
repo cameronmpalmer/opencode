@@ -52,6 +52,8 @@ import {
   archiveSessionFamily,
   archiveSessionRoots,
   groupSessionFamilies,
+  isArchivePending,
+  nextSurvivingSession,
   legacyArchiveSession,
   previewSessionArchive,
   workspaceArchiveConfirmation,
@@ -889,10 +891,9 @@ export default function LegacyLayout(props: ParentProps) {
   }
 
   async function archiveSession(session: Session) {
+    if (isArchivePending(session)) return
     const [store, setStore] = serverSync().child(session.directory)
     const sessions = store.session ?? []
-    const index = sessions.findIndex((s) => s.id === session.id)
-    const nextSession = sessions[index + 1] ?? sessions[index - 1]
 
     await archiveSessionFamily({
       api: serverSDK().api.session,
@@ -911,12 +912,10 @@ export default function LegacyLayout(props: ParentProps) {
         )
         sessionIDs.forEach((sessionID) => serverSync().session.evict(sessionID))
         notifySessionTabsRemoved({ directory: session.directory, sessionIDs })
-        if (removed.has(session.id) && session.id === params.id) {
-          if (nextSession) {
-            navigate(`/${params.dir}/session/${nextSession.id}`)
-          } else {
-            navigate(`/${params.dir}/session`)
-          }
+        if (params.id && removed.has(params.id)) {
+          const next = nextSurvivingSession(sessions, removed, params.id)
+          if (next) navigate(`/${params.dir}/session/${next}`)
+          else navigate(`/${params.dir}/session`)
         }
       },
       onError: (error) =>
@@ -1009,10 +1008,10 @@ export default function LegacyLayout(props: ParentProps) {
         title: language.t("command.session.archive"),
         category: language.t("command.category.session"),
         keybind: "mod+shift+backspace",
-        disabled: !params.dir || !params.id,
+        disabled: !params.dir || !params.id || isArchivePending(currentSessions().find((s) => s.id === params.id)),
         onSelect: () => {
           const session = currentSessions().find((s) => s.id === params.id)
-          if (session) void archiveSession(session)
+          if (session && !isArchivePending(session)) void archiveSession(session)
         },
       },
       {
@@ -1649,14 +1648,14 @@ export default function LegacyLayout(props: ParentProps) {
       plan: [] as WorkspaceArchiveEntry[],
     })
 
-    const refresh = async () => {
+    const buildPlan = async () => {
       const sessions = await listAllSessions(serverSDK().api.session, {
         directory: props.directory,
         order: "desc",
       }).catch(() => [])
       const active = sessions.filter((session) => session.time.archived === undefined || session.time.archived === null)
       const groups = groupSessionFamilies(active)
-      const plan = await Promise.all(
+      return Promise.all(
         groups.map(async (group): Promise<WorkspaceArchiveEntry> => {
           try {
             const preview = await previewSessionArchive({
@@ -1664,7 +1663,12 @@ export default function LegacyLayout(props: ParentProps) {
               sessionID: group.rootID,
               directory: group.directory,
             })
-            return { ...group, preview }
+            return {
+              ...group,
+              preview: preview.fallback
+                ? { ...preview, descendantCount: Math.max(0, group.sessionIDs.length - 1) }
+                : preview,
+            }
           } catch (error) {
             return {
               ...group,
@@ -1680,6 +1684,10 @@ export default function LegacyLayout(props: ParentProps) {
           }
         }),
       )
+    }
+
+    const refresh = async () => {
+      const plan = await buildPlan()
       setState({ plan, planStatus: "ready" })
     }
 
@@ -1697,9 +1705,13 @@ export default function LegacyLayout(props: ParentProps) {
         })
     })
 
-    const handleReset = () => {
+    const handleReset = async () => {
+      setState("planStatus", "loading")
+      // Recompute at confirm time so a session or family created while the
+      // dialog was open is archived too.
+      const plan = await buildPlan()
       dialog.close()
-      void resetWorkspace(props.root, props.directory, state.plan)
+      void resetWorkspace(props.root, props.directory, plan)
     }
 
     const description = () => {
@@ -1711,11 +1723,9 @@ export default function LegacyLayout(props: ParentProps) {
 
     const archivedLabel = () => {
       if (state.planStatus !== "ready") return language.t("workspace.status.checking")
-      if (state.plan.length === 0) return language.t("workspace.reset.archived.none")
-      return workspaceArchiveConfirmation(
-        state.plan.map((entry) => entry.preview),
-        language.t,
-      )
+      const available = state.plan.filter((entry) => !entry.error)
+      if (available.length === 0) return language.t("workspace.reset.archived.none")
+      return workspaceArchiveConfirmation(available.map((entry) => entry.preview))
     }
 
     return (
@@ -1737,7 +1747,7 @@ export default function LegacyLayout(props: ParentProps) {
               variant="primary"
               size="large"
               disabled={state.status === "loading" || state.planStatus !== "ready"}
-              onClick={handleReset}
+              onClick={() => void handleReset()}
             >
               {language.t("workspace.reset.button")}
             </Button>

@@ -30,7 +30,7 @@ export function confirmArchiveSession(
       () => (
         <Dialog title={language.t("session.archive.title")} fit>
           <div class="flex flex-col gap-4 pl-6 pr-2.5 pb-3">
-            <span class="text-14-regular text-text-strong">{archiveConfirmation(preview, language.t)}</span>
+            <span class="text-14-regular text-text-strong">{archiveConfirmation(preview)}</span>
             <div class="flex justify-end gap-2">
               <Button variant="ghost" size="large" onClick={() => finish(false)}>
                 {language.t("common.cancel")}

@@ -1153,4 +1153,5 @@ export const dict = {
   "workspace.archive.confirm":
     "Archive {{families}} families and {{sessions}} sessions? {{tasks}} running tasks will be cancelled.",
   "workspace.reset.archiveFailed.title": "Some sessions could not be archived",
+  "session.archive.archiving": "Archiving...",
 }

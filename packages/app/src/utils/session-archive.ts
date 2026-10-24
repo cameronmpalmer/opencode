@@ -80,13 +80,18 @@ function errorStatus(error: unknown): number | string | undefined {
 }
 
 export function isArchiveFeatureUnavailable(error: unknown): boolean {
+  // A 404 alone is not enough: the server uses NotFoundError for a missing
+  // session and FeatureDisabledError for the familyArchive flag. Treating every
+  // 404 as feature-disabled would turn a vanished session into a legacy PATCH.
   const tag = errorTag(error)
-  if (tag === "SessionNotFoundError") return false
-  const status = errorStatus(error)
-  if (status === 404 || status === "404") return true
-  if (tag === "FeatureDisabledError") return true
-  if (tag === "NotFound" || tag === "NotFoundError" || tag === "FeatureDisabled") return true
-  return false
+  if (tag === "FeatureDisabledError" || tag === "FeatureDisabled") return true
+  if (tag === "SessionNotFoundError" || tag === "NotFoundError" || tag === "NotFound") return false
+  const code = errorStatus(error)
+  return code === "FeatureDisabledError" || code === "FeatureDisabled"
+}
+
+export function isArchivePending(session: { archiveState?: "archiving" | null } | undefined): boolean {
+  return session?.archiveState === "archiving"
 }
 
 export function archiveErrorMessage(error: unknown, fallback = "Archive failed") {
@@ -221,6 +226,22 @@ export function workspaceArchiveConfirmation(
   )}? ${tasks} running ${plural(tasks, "task", "tasks")} will be cancelled.`
 }
 
+export function nextSurvivingSession(
+  sessions: readonly Pick<Session, "id">[],
+  removed: ReadonlySet<string>,
+  currentID: string | undefined,
+): string | undefined {
+  if (!currentID || !removed.has(currentID)) return
+  const index = sessions.findIndex((session) => session.id === currentID)
+  if (index === -1) {
+    return sessions.find((session) => !removed.has(session.id))?.id
+  }
+  for (let offset = 1; offset <= sessions.length; offset++) {
+    const next = sessions[index + offset] ?? sessions[index - offset]
+    if (next && !removed.has(next.id)) return next.id
+  }
+}
+
 export async function previewSessionArchive(input: {
   api: Pick<SessionArchiveApi, "archivePreview">
   sessionID: string
@@ -263,6 +284,19 @@ export type ArchiveRootOutcome = {
   error?: unknown
 }
 
+async function archiveLegacyGroup(input: {
+  sessionIDs: readonly string[]
+  directory?: string
+  legacyArchive: (sessionID: string, directory?: string) => Promise<unknown>
+}) {
+  const results = await Promise.allSettled(
+    input.sessionIDs.map((sessionID) => input.legacyArchive(sessionID, input.directory)),
+  )
+  const failed = results.find((result): result is PromiseRejectedResult => result.status === "rejected")
+  if (failed) throw failed.reason
+  return unique(input.sessionIDs)
+}
+
 export async function archiveSessionRoots(input: {
   api: SessionArchiveApi
   roots: readonly SessionArchiveRoot[]
@@ -272,10 +306,25 @@ export async function archiveSessionRoots(input: {
     input.roots.map(async (root): Promise<ArchiveRootOutcome> => {
       try {
         if (root.fallback) {
-          await input.legacyArchive(root.rootID, root.directory)
-          return { rootID: root.rootID, sessionIDs: [root.rootID] }
+          const sessionIDs = await archiveLegacyGroup({
+            sessionIDs: root.sessionIDs,
+            directory: root.directory,
+            legacyArchive: input.legacyArchive,
+          })
+          return { rootID: root.rootID, sessionIDs }
         }
-        const result = await input.api.archive({ sessionID: root.rootID, directory: root.directory })
+        let result: Awaited<ReturnType<SessionArchiveApi["archive"]>>
+        try {
+          result = await input.api.archive({ sessionID: root.rootID, directory: root.directory })
+        } catch (error) {
+          if (!isArchiveFeatureUnavailable(error)) throw error
+          const sessionIDs = await archiveLegacyGroup({
+            sessionIDs: root.sessionIDs,
+            directory: root.directory,
+            legacyArchive: input.legacyArchive,
+          })
+          return { rootID: root.rootID, sessionIDs }
+        }
         return {
           rootID: root.rootID,
           sessionIDs: unique([
@@ -325,20 +374,36 @@ export async function archiveSessionFamily(input: {
   if (!(await input.confirm(preview))) return { status: "cancelled" }
 
   let sessionIDs: string[]
+  const group = collectSessionSubtree(input.localSessions(), input.sessionID)
   try {
     if (preview.fallback) {
-      await input.legacyArchive(input.sessionID, input.directory)
-      sessionIDs = [input.sessionID]
-    } else {
-      const result = await input.api.archive({
-        sessionID: input.sessionID,
+      sessionIDs = await archiveLegacyGroup({
+        sessionIDs: group,
         directory: input.directory,
+        legacyArchive: input.legacyArchive,
       })
+    } else {
+      let result: Awaited<ReturnType<SessionArchiveApi["archive"]>>
+      try {
+        result = await input.api.archive({
+          sessionID: input.sessionID,
+          directory: input.directory,
+        })
+      } catch (error) {
+        if (!isArchiveFeatureUnavailable(error)) throw error
+        sessionIDs = await archiveLegacyGroup({
+          sessionIDs: group,
+          directory: input.directory,
+          legacyArchive: input.legacyArchive,
+        })
+        input.remove(sessionIDs)
+        return { status: "archived", sessionIDs }
+      }
       sessionIDs = unique([
         result.root_id ?? input.sessionID,
         ...result.archived_ids,
         ...result.already_archived_ids,
-        ...collectSessionSubtree(input.localSessions(), input.sessionID),
+        ...group,
       ])
     }
   } catch (error) {

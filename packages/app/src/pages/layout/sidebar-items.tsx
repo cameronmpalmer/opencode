@@ -15,6 +15,7 @@ import { useNotification } from "@/context/notification"
 import { usePermission } from "@/context/permission"
 import { messageAgentColor } from "@/utils/agent"
 import { sessionTitle } from "@/utils/session-title"
+import { isArchivePending } from "@/utils/session-archive"
 import { sessionPermissionRequest } from "../session/composer/session-request-tree"
 import { childSessionOnPath, getProjectAvatarSource, hasProjectPermissions } from "./helpers"
 
@@ -167,6 +168,7 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
     if (hasPermissions()) return false
     return serverSync().session.data.session_working(props.session.id)
   })
+  const archiving = createMemo(() => isArchivePending(props.session))
 
   const tint = createMemo(() =>
     messageAgentColor(serverSync().session.data.message[props.session.id], sessionStore.agent),
@@ -251,15 +253,20 @@ export const SessionItem = (props: SessionItemProps): JSX.Element => {
                 "group-focus-within/session:w-6 group-focus-within/session:opacity-100 group-focus-within/session:pointer-events-auto": true,
               }}
             >
-              <Tooltip value={language.t("common.archive")} placement="top">
+              <Tooltip
+                value={archiving() ? language.t("session.archive.archiving") : language.t("common.archive")}
+                placement="top"
+              >
                 <IconButton
                   icon="archive"
                   variant="ghost"
                   class="size-6 rounded-md"
-                  aria-label={language.t("common.archive")}
+                  disabled={archiving()}
+                  aria-label={archiving() ? language.t("session.archive.archiving") : language.t("common.archive")}
                   onClick={(event) => {
                     event.preventDefault()
                     event.stopPropagation()
+                    if (archiving()) return
                     void props.archiveSession(props.session)
                   }}
                 />

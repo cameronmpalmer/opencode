@@ -72,7 +72,13 @@ import { useSDK } from "@/context/sdk"
 import { useSync } from "@/context/sync"
 import { notifySessionTabsRemoved } from "@/components/titlebar-session-events"
 import { confirmArchiveSession } from "@/components/dialog-archive-session"
-import { archiveErrorMessage, archiveSessionFamily, legacyArchiveSession } from "@/utils/session-archive"
+import {
+  archiveErrorMessage,
+  archiveSessionFamily,
+  isArchivePending,
+  legacyArchiveSession,
+  nextSurvivingSession,
+} from "@/utils/session-archive"
 import { sessionTitle } from "@/utils/session-title"
 import { scheduleConnectedMeasure } from "./measure"
 import { observeElementOffsetReconnectAware } from "./observe-element-offset"
@@ -792,11 +798,11 @@ export function MessageTimeline(props: {
     titleMutation.mutate({ id, title: next })
   }
 
-  const navigateAfterSessionRemoval = (sessionID: string, parentID?: string, nextSessionID?: string) => {
-    if (params.id !== sessionID) return
+  const navigateAfterSessionRemoval = (removed: ReadonlySet<string>, parentID?: string, nextSessionID?: string) => {
+    if (!params.id || !removed.has(params.id)) return
     const href = (id: string) =>
       params.serverKey ? sessionHref(requireServerKey(params.serverKey), id) : legacySessionHref(sdk().directory, id)
-    if (parentID) {
+    if (parentID && !removed.has(parentID)) {
       navigate(href(parentID))
       return
     }
@@ -836,11 +842,9 @@ export function MessageTimeline(props: {
 
   const archiveSession = async (sessionID: string) => {
     const session = sync().session.get(sessionID)
-    if (!session) return
+    if (!session || isArchivePending(session)) return
 
     const sessions = sync().data.session ?? []
-    const index = sessions.findIndex((s) => s.id === sessionID)
-    const nextSession = index === -1 ? undefined : (sessions[index + 1] ?? sessions[index - 1])
 
     await archiveSessionFamily({
       api: sdk().api.session,
@@ -857,7 +861,7 @@ export function MessageTimeline(props: {
           }),
         )
         sessionIDs.forEach((id) => sync().session.evict(id))
-        navigateAfterSessionRemoval(sessionID, session.parentID, nextSession?.id)
+        navigateAfterSessionRemoval(removed, session.parentID, nextSurvivingSession(sessions, removed, params.id))
         notifySessionTabsRemoved({ directory: sdk().directory, sessionIDs })
       },
       onError: (err) => {
@@ -918,7 +922,7 @@ export function MessageTimeline(props: {
       }
     }
 
-    navigateAfterSessionRemoval(sessionID, session.parentID, nextSession?.id)
+    navigateAfterSessionRemoval(removed, session.parentID, nextSession?.id)
 
     sync().set(
       produce((draft) => {
@@ -1600,8 +1604,15 @@ export function MessageTimeline(props: {
                                 <DropdownMenu.Item onSelect={() => exportSession(id)}>
                                   <DropdownMenu.ItemLabel>{language.t("common.export")}</DropdownMenu.ItemLabel>
                                 </DropdownMenu.Item>
-                                <DropdownMenu.Item onSelect={() => void archiveSession(id)}>
-                                  <DropdownMenu.ItemLabel>{language.t("common.archive")}</DropdownMenu.ItemLabel>
+                                <DropdownMenu.Item
+                                  disabled={isArchivePending(sync().session.get(id))}
+                                  onSelect={() => void archiveSession(id)}
+                                >
+                                  <DropdownMenu.ItemLabel>
+                                    {isArchivePending(sync().session.get(id))
+                                      ? language.t("session.archive.archiving")
+                                      : language.t("common.archive")}
+                                  </DropdownMenu.ItemLabel>
                                 </DropdownMenu.Item>
                                 <DropdownMenu.Separator />
                                 <DropdownMenu.Item
@@ -1674,8 +1685,13 @@ export function MessageTimeline(props: {
                               <MenuV2.Item onSelect={() => exportSession(id)}>
                                 {language.t("common.export")}...
                               </MenuV2.Item>
-                              <MenuV2.Item onSelect={() => void archiveSession(id)}>
-                                {language.t("common.archive")}
+                              <MenuV2.Item
+                                disabled={isArchivePending(sync().session.get(id))}
+                                onSelect={() => void archiveSession(id)}
+                              >
+                                {isArchivePending(sync().session.get(id))
+                                  ? language.t("session.archive.archiving")
+                                  : language.t("common.archive")}
                               </MenuV2.Item>
                               <MenuV2.Separator />
                               <MenuV2.Item onSelect={() => dialog.show(() => <DialogDeleteSession sessionID={id} />)}>

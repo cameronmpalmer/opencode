@@ -91,17 +91,19 @@ describe("createCompatibleApi", () => {
     expect(result.archived_ids).toEqual(["ses_1"])
   })
 
-  test("reports an empty V1 family preview without calling the server", async () => {
+  test("marks V1 family preview unavailable without calling the server", async () => {
     const { api, requests } = setup("v1")
 
-    const preview = await api.session.archivePreview({ sessionID: "ses_1", directory: "/repo" })
+    const error = await api.session
+      .archivePreview({ sessionID: "ses_1", directory: "/repo" })
+      .then(() => undefined)
+      .catch((cause) => cause)
 
     expect(requests).toHaveLength(0)
-    expect(preview).toEqual({
-      root_id: "ses_1",
-      descendant_count: 0,
-      active_count: 0,
-      active_session_ids: [],
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).cause).toMatchObject({
+      status: 404,
+      body: { _tag: "FeatureDisabledError", feature: "familyArchive" },
     })
   })
 

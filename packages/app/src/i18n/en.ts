@@ -815,6 +815,7 @@ export const dict = {
   "common.reset": "Reset",
   "common.archive": "Archive",
   "session.archive.title": "Archive session",
+  "session.archive.archiving": "Archiving...",
   "session.archive.confirm.single": "Archive this session? It will be hidden from your session list.",
   "session.archive.confirm.running": "This session is running. Archive it and cancel the running task?",
   "session.archive.confirm.family":

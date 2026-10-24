@@ -6,8 +6,6 @@ import type { createServerSdkContext } from "./server-sdk"
 import type { createServerSyncContextInner } from "./server-sync"
 import type { State } from "./global-sync/types"
 import { normalizeSessionInfo } from "@/utils/session"
-import { archiveSessionFamily, legacyArchiveSession } from "@/utils/session-archive"
-import { notifySessionTabsRemoved } from "@/components/titlebar-session-events"
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 const sessionFields = new Set([
@@ -135,31 +133,6 @@ export const createDirSyncContext = (
         setStore("session", reconcile(sessions, { key: "id" }))
       },
       more: createMemo(() => current()[0].session.length >= current()[0].limit),
-      archive: async (sessionID: string) => {
-        const [store, setStore] = current()
-        const outcome = await archiveSessionFamily({
-          api: serverSDK.api.session,
-          sessionID,
-          directory,
-          // This context exposes a low-level archive action without a dialog.
-          // UI entry points confirm before calling; this keeps the store and
-          // tab cleanup consistent for programmatic callers.
-          confirm: () => true,
-          localSessions: () => store.session,
-          legacyArchive: (id, location) => legacyArchiveSession(serverSDK.client, id, location ?? directory),
-          remove: (sessionIDs) => {
-            const removed = new Set(sessionIDs)
-            setStore(
-              "session",
-              produce((draft) => {
-                draft.splice(0, draft.length, ...draft.filter((session) => !removed.has(session.id)))
-              }),
-            )
-            notifySessionTabsRemoved({ directory, sessionIDs })
-          },
-        })
-        return outcome
-      },
     },
     mcp: {
       toggle: (name: string) => serverSync.mcp.toggle(directory, name),

@@ -10,6 +10,7 @@ import { useLanguage } from "@/context/language"
 import { ServerConnection } from "@/context/server"
 import { SessionTabAvatarView } from "@/pages/layout/session-tab-avatar"
 import { sessionTitle } from "@/utils/session-title"
+import { isArchivePending } from "@/utils/session-archive"
 import { shouldOpenSessionInBackground } from "../home-session-open"
 import {
   HomeSessionStatusController,
@@ -460,16 +461,30 @@ function HomeSessionRow(props: HomeSessionsViewProps & { record: HomeSessionReco
             group-hover/session:opacity-100 focus-within:opacity-100
           `}
         >
-          <TooltipV2 class="flex shrink-0 items-center" placement="bottom" value={props.language.t("common.archive")}>
+          <TooltipV2
+            class="flex shrink-0 items-center"
+            placement="bottom"
+            value={
+              isArchivePending(props.record.session)
+                ? props.language.t("session.archive.archiving")
+                : props.language.t("common.archive")
+            }
+          >
             <IconButtonV2
               data-action="home-session-archive"
               variant="ghost-muted"
               size="large"
+              disabled={isArchivePending(props.record.session)}
               icon={<IconV2 name="archive" />}
-              aria-label={props.language.t("common.archive")}
+              aria-label={
+                isArchivePending(props.record.session)
+                  ? props.language.t("session.archive.archiving")
+                  : props.language.t("common.archive")
+              }
               onClick={(event) => {
                 event.preventDefault()
                 event.stopPropagation()
+                if (isArchivePending(props.record.session)) return
                 void props.onArchiveSession(props.record.session)
               }}
             />
