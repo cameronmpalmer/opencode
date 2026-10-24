@@ -22,3 +22,21 @@ export class ContextSnapshotDecodeError extends Schema.TaggedErrorClass<ContextS
     return `Failed to decode context snapshot for session ${this.sessionID}: ${this.details}`
   }
 }
+
+/** A run stopped because its session was archived. Reused by projector rejections in A5. */
+export class SessionArchivedError extends Schema.TaggedErrorClass<SessionArchivedError>()(
+  "Session.SessionArchivedError",
+  {
+    sessionID: SessionSchema.ID,
+    message: Schema.String,
+  },
+) {}
+
+/** Another process holds a live run lease for the session. */
+export class SessionLeaseBusyError extends Schema.TaggedErrorClass<SessionLeaseBusyError>()(
+  "Session.SessionLeaseBusyError",
+  {
+    sessionID: SessionSchema.ID,
+    message: Schema.String,
+  },
+) {}
