@@ -8,9 +8,23 @@ import { SessionArchivedError, SessionLeaseBusyError } from "../error"
 import { SessionSchema } from "../schema"
 import { SessionRunLeaseTable, SessionTable } from "../sql"
 
-/** Heartbeats older than this are considered abandoned (design 4.2). */
+/**
+ * Heartbeats older than this are considered abandoned (design 4.2). Shared with the
+ * archive service so both sides use one cutoff.
+ */
 export const LIVE_LEASE_MS = 60_000
-/** A live run renews its lease at least this often. */
+/**
+ * A live run renews its lease at least about this often: the timer fires every
+ * `HEARTBEAT_MS` plus scheduling latency, so treat it as a lower bound on the renewal
+ * period, not an exact interval.
+ *
+ * Independence limitation: the heartbeat and cancel poll are independent Effect fibers,
+ * not worker threads. They run while the run is awaiting async I/O (LLM calls, tool
+ * processes, SQLite), but they cannot fire while synchronous CPU work blocks the event
+ * loop. `LIVE_LEASE_MS` (60s) and the per-tool timeouts bound that window; a single
+ * synchronous block longer than 60s can still make a live lease look stale. A worker
+ * thread or external timer would be required to remove that limitation.
+ */
 export const HEARTBEAT_MS = 5_000
 /** How often a live run checks for an archive request. */
 export const CANCEL_POLL_MS = 1_000
@@ -128,21 +142,25 @@ const heartbeatLoop = (
 const cancelPollLoop = (
   db: Database.Interface["db"],
   sessionID: SessionSchema.ID,
+  leaseID: string,
   timing: Timing,
   stop: Deferred.Deferred<void, SessionArchivedError>,
 ) =>
   Effect.gen(function* () {
     for (;;) {
       const lease = yield* db
-        .select({ cancelRequested: SessionRunLeaseTable.cancel_requested })
+        .select({ leaseID: SessionRunLeaseTable.lease_id, cancelRequested: SessionRunLeaseTable.cancel_requested })
         .from(SessionRunLeaseTable)
-        .where(eq(SessionRunLeaseTable.session_id, sessionID))
+        .where(and(eq(SessionRunLeaseTable.session_id, sessionID), eq(SessionRunLeaseTable.lease_id, leaseID)))
         .get()
         .pipe(Effect.orDie)
       if (!lease) {
         return yield* Deferred.fail(
           stop,
-          new SessionArchivedError({ sessionID, message: `Run lease for session ${sessionID} disappeared` }),
+          new SessionArchivedError({
+            sessionID,
+            message: `Run lease for session ${sessionID} was deleted or stolen`,
+          }),
         )
       }
       const session = yield* db
@@ -204,7 +222,7 @@ export const withRunLease = <A, E, R>(input: {
         ),
       )
       yield* Effect.forkScoped(
-        cancelPollLoop(input.db, input.sessionID, timing, stop).pipe(
+        cancelPollLoop(input.db, input.sessionID, leaseID, timing, stop).pipe(
           Effect.catchCause((cause) => Deferred.failCause(stop, cause)),
         ),
       )

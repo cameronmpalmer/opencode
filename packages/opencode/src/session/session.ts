@@ -12,6 +12,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV2 } from "@opencode-ai/core/session"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
+import { LIVE_LEASE_MS } from "@opencode-ai/core/session/execution/run-lease"
 import { locationServiceMapLayer } from "@opencode-ai/core/location-services"
 
 import { NotFoundError } from "@/storage/storage"
@@ -881,8 +882,6 @@ const layer: Layer.Layer<
       archiveState?: "archiving" | null
       archiveStateAt?: number | null
     }
-
-    const LIVE_LEASE_MS = 60_000
 
     const subtreeIDs = (tx: Tx, rootID: SessionID) =>
       tx

@@ -13,14 +13,15 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { ContextSnapshotDecodeError } from "@opencode-ai/core/session/error"
 import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { SessionExecutionLocal } from "@opencode-ai/core/session/execution/local"
+import { withRunLease } from "@opencode-ai/core/session/execution/run-lease"
 import { SessionRunner } from "@opencode-ai/core/session/runner"
 import { SessionSchema } from "@opencode-ai/core/session/schema"
-import { SessionRunLeaseTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionArchiveGuardTable, SessionRunLeaseTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionStore } from "@opencode-ai/core/session/store"
 import { testEffect } from "./lib/effect"
 
 const projectID = Project.ID.global
-const timing = { liveLeaseMs: 200, heartbeatMs: 20, pollMs: 10 }
+const timing = { liveLeaseMs: 1_000, heartbeatMs: 20, pollMs: 10 }
 
 let behavior: (input: {
   sessionID: SessionSchema.ID
@@ -84,6 +85,32 @@ const seedSession = (sessionID: SessionSchema.ID, values: Partial<typeof Session
     return db
   })
 
+const guardCount = () =>
+  Effect.gen(function* () {
+    const db = observedDB!
+    return (yield* db.select().from(SessionArchiveGuardTable).all().pipe(Effect.orDie)).length
+  })
+
+/** A5 adds a BEFORE UPDATE trigger that only allows archive-field writes under a guard row. */
+const updateArchiveFields = (sessionID: SessionSchema.ID, values: Partial<typeof SessionTable.$inferInsert>) => {
+  const db = observedDB!
+  return Effect.acquireUseRelease(
+    db
+      .insert(SessionArchiveGuardTable)
+      .values({ session_id: sessionID })
+      .onConflictDoNothing()
+      .run()
+      .pipe(Effect.orDie),
+    () => db.update(SessionTable).set(values).where(eq(SessionTable.id, sessionID)).run().pipe(Effect.orDie),
+    () =>
+      db
+        .delete(SessionArchiveGuardTable)
+        .where(eq(SessionArchiveGuardTable.session_id, sessionID))
+        .run()
+        .pipe(Effect.orDie),
+  )
+}
+
 const readLease = (sessionID: SessionSchema.ID) =>
   Effect.gen(function* () {
     const db = observedDB!
@@ -137,24 +164,30 @@ describe("SessionRunLease", () => {
     }),
   )
 
-  it.live("heartbeats on an independent timer while the run is blocked, then deletes the lease before idle", () =>
+  it.live("heartbeats on an independent fiber while the run awaits a long async block, then deletes before idle", () =>
     Effect.gen(function* () {
       const sessionID = SessionSchema.ID.make("ses_lease_heartbeat")
       yield* seedSession(sessionID)
+      // The run parks on a Deferred, representing an async LLM/tool wait. The heartbeat
+      // fiber must keep renewing the row while the run itself makes no progress.
       const gate = yield* Deferred.make<void>()
       behavior = () => Deferred.await(gate)
       const execution = yield* SessionExecution.Service
 
       const fiber = yield* execution.resume(sessionID).pipe(Effect.forkChild)
       const lease = yield* waitFor("first heartbeat", readLease(sessionID), (row) => row !== undefined)
-      const firstHeartbeat = lease!.heartbeat_at
+      let lastHeartbeat = lease!.heartbeat_at
       expect(lease!.lease_id.length).toBeGreaterThan(0)
 
-      yield* waitFor(
-        "advanced heartbeat",
-        readLease(sessionID),
-        (row) => row !== undefined && row.heartbeat_at > firstHeartbeat,
-      )
+      for (const label of ["first", "second"]) {
+        const previous = lastHeartbeat
+        const advanced = yield* waitFor(
+          `${label} advanced heartbeat`,
+          readLease(sessionID),
+          (row) => row !== undefined && row.heartbeat_at > previous,
+        )
+        lastHeartbeat = advanced!.heartbeat_at
+      }
       expect(Array.from(yield* execution.active)).toContain(sessionID)
 
       yield* Deferred.succeed(gate, undefined)
@@ -197,30 +230,114 @@ describe("SessionRunLease", () => {
     }),
   )
 
-  it.live("stops the run when cancel_requested is observed, even if it is restored to 0", () =>
+  it.live("stops when the lease row is deleted mid-run", () =>
     Effect.gen(function* () {
-      const sessionID = SessionSchema.ID.make("ses_lease_cancel")
+      const sessionID = SessionSchema.ID.make("ses_lease_deleted")
       const db = yield* seedSession(sessionID)
       behavior = () => Effect.never
 
       const fiber = yield* (yield* SessionExecution.Service).resume(sessionID).pipe(Effect.forkChild)
+      yield* waitFor("lease", readLease(sessionID), (row) => row !== undefined)
+      yield* db
+        .delete(SessionRunLeaseTable)
+        .where(eq(SessionRunLeaseTable.session_id, sessionID))
+        .run()
+        .pipe(Effect.orDie)
+
+      const exit = yield* Fiber.join(fiber).pipe(Effect.exit)
+      expect(failureTag(exit)).toBe("Session.SessionArchivedError")
+      expect(yield* readLease(sessionID)).toBeUndefined()
+    }),
+  )
+
+  it.live("stops when another process steals the lease_id (heartbeat ownership check)", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_lease_stolen")
+      const db = yield* seedSession(sessionID)
+      // Cancel polling is effectively disabled for this run, so only the heartbeat's
+      // lease_id predicate can notice the theft.
+      const fiber = yield* withRunLease({
+        db,
+        sessionID,
+        run: Effect.never,
+        timing: { liveLeaseMs: 1_000, heartbeatMs: 20, pollMs: 60_000 },
+      }).pipe(Effect.forkChild)
       const lease = yield* waitFor("lease", readLease(sessionID), (row) => row !== undefined)
 
+      yield* db
+        .update(SessionRunLeaseTable)
+        .set({ lease_id: "thief" })
+        .where(and(eq(SessionRunLeaseTable.session_id, sessionID), eq(SessionRunLeaseTable.lease_id, lease!.lease_id)))
+        .run()
+        .pipe(Effect.orDie)
+
+      const exit = yield* Fiber.join(fiber).pipe(Effect.exit)
+      expect(failureTag(exit)).toBe("Session.SessionArchivedError")
+      // The finalizer only deletes its own lease_id, so it must not remove the thief's row.
+      expect((yield* readLease(sessionID))?.lease_id).toBe("thief")
+    }),
+  )
+
+  it.live("deletes the lease when the run dies with a defect", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_lease_defect")
+      yield* seedSession(sessionID)
+      behavior = () => Effect.die(new Error("boom"))
+
+      const exit = yield* (yield* SessionExecution.Service).resume(sessionID).pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBeTrue()
+      expect(Exit.isSuccess(exit) ? false : Cause.hasDies(exit.cause)).toBeTrue()
+      expect(yield* readLease(sessionID)).toBeUndefined()
+    }),
+  )
+
+  it.live("continues when a cancel request is restored to 0 before the run observes it", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionSchema.ID.make("ses_lease_cancel_restored")
+      const db = yield* seedSession(sessionID)
+      behavior = () => Effect.never
+      const execution = yield* SessionExecution.Service
+
+      const fiber = yield* execution.resume(sessionID).pipe(Effect.forkChild)
+      yield* waitFor("lease", readLease(sessionID), (row) => row !== undefined)
+
+      // Both writes commit atomically, so the poll can only ever observe the final 0.
+      // Seeing 0 before the run has started stopping means it must keep running.
+      yield* db
+        .transaction(
+          (tx) =>
+            Effect.gen(function* () {
+              yield* tx
+                .update(SessionRunLeaseTable)
+                .set({ cancel_requested: 1 })
+                .where(eq(SessionRunLeaseTable.session_id, sessionID))
+                .run()
+                .pipe(Effect.orDie)
+              yield* tx
+                .update(SessionRunLeaseTable)
+                .set({ cancel_requested: 0 })
+                .where(eq(SessionRunLeaseTable.session_id, sessionID))
+                .run()
+                .pipe(Effect.orDie)
+            }),
+          { behavior: "immediate" },
+        )
+        .pipe(Effect.orDie)
+
+      yield* Effect.sleep("60 millis")
+      expect(yield* readLease(sessionID)).toBeDefined()
+      expect(Array.from(yield* execution.active)).toContain(sessionID)
+
+      // A later, observable request stops the run. Once the run observes 1 it stops and
+      // never re-arms, so A4 restoring the row afterwards cannot revive it.
       yield* db
         .update(SessionRunLeaseTable)
         .set({ cancel_requested: 1 })
         .where(eq(SessionRunLeaseTable.session_id, sessionID))
         .run()
         .pipe(Effect.orDie)
-      // Observe the run stopping before A4's failure path restores the marker.
       yield* waitFor("cancelled run to release the lease", readLease(sessionID), (row) => row === undefined)
-      // A4 restores the marker after a failed archive; the run must not re-arm.
-      yield* db
-        .update(SessionRunLeaseTable)
-        .set({ cancel_requested: 0 })
-        .where(and(eq(SessionRunLeaseTable.session_id, sessionID), eq(SessionRunLeaseTable.lease_id, lease!.lease_id)))
-        .run()
-        .pipe(Effect.orDie)
 
       const exit = yield* Fiber.join(fiber).pipe(Effect.exit)
       expect(failureTag(exit)).toBe("Session.SessionArchivedError")
@@ -231,17 +348,13 @@ describe("SessionRunLease", () => {
   it.live("stops the run when the session is marked archiving", () =>
     Effect.gen(function* () {
       const sessionID = SessionSchema.ID.make("ses_lease_archiving")
-      const db = yield* seedSession(sessionID)
+      yield* seedSession(sessionID)
       behavior = () => Effect.never
 
       const fiber = yield* (yield* SessionExecution.Service).resume(sessionID).pipe(Effect.forkChild)
       yield* waitFor("lease", readLease(sessionID), (row) => row !== undefined)
-      yield* db
-        .update(SessionTable)
-        .set({ archive_state: "archiving" })
-        .where(eq(SessionTable.id, sessionID))
-        .run()
-        .pipe(Effect.orDie)
+      yield* updateArchiveFields(sessionID, { archive_state: "archiving" })
+      expect(yield* guardCount()).toBe(0)
 
       const exit = yield* Fiber.join(fiber).pipe(Effect.exit)
       expect(failureTag(exit)).toBe("Session.SessionArchivedError")
@@ -252,17 +365,13 @@ describe("SessionRunLease", () => {
   it.live("stops the run when time_archived is set", () =>
     Effect.gen(function* () {
       const sessionID = SessionSchema.ID.make("ses_lease_archived")
-      const db = yield* seedSession(sessionID)
+      yield* seedSession(sessionID)
       behavior = () => Effect.never
 
       const fiber = yield* (yield* SessionExecution.Service).resume(sessionID).pipe(Effect.forkChild)
       yield* waitFor("lease", readLease(sessionID), (row) => row !== undefined)
-      yield* db
-        .update(SessionTable)
-        .set({ time_archived: Date.now() })
-        .where(eq(SessionTable.id, sessionID))
-        .run()
-        .pipe(Effect.orDie)
+      yield* updateArchiveFields(sessionID, { time_archived: Date.now() })
+      expect(yield* guardCount()).toBe(0)
 
       const exit = yield* Fiber.join(fiber).pipe(Effect.exit)
       expect(failureTag(exit)).toBe("Session.SessionArchivedError")
@@ -339,7 +448,7 @@ describe("SessionRunLease", () => {
         .values({
           session_id: sessionID,
           lease_id: "recent-lease",
-          heartbeat_at: Date.now() - timing.liveLeaseMs + 100,
+          heartbeat_at: Date.now() - timing.pollMs,
           cancel_requested: 0,
         })
         .run()
