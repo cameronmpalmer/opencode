@@ -4,13 +4,20 @@ import { Session } from "@/session/session"
 import { MessageV2 } from "../../session/message-v2"
 import { CliError, effectCmd } from "../effect-cmd"
 import { Database } from "@opencode-ai/core/database/database"
-import { SessionTable, MessageTable, PartTable } from "@opencode-ai/core/session/sql"
+import {
+  MessageTable,
+  PartTable,
+  SessionArchiveGuardTable,
+  SessionImportExemptTable,
+  SessionTable,
+} from "@opencode-ai/core/session/sql"
 import { InstanceRef } from "@/effect/instance-ref"
 import { ShareNext } from "@/share/share-next"
 import { EOL } from "os"
 import path from "path"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Effect, Schema } from "effect"
+import { eq } from "drizzle-orm"
 import type { InstanceContext } from "@/project/instance-context"
 
 const decodeMessageInfo = Schema.decodeUnknownSync(SessionV1.Info)
@@ -36,6 +43,11 @@ export function shouldAttachShareAuthHeaders(shareUrl: string, accountBaseUrl: s
   } catch {
     return false
   }
+}
+
+export function importExemptionMs(env: Record<string, string | undefined> = process.env): number {
+  const value = Number(env.OPENCODE_SESSION_IMPORT_EXEMPTION_MS)
+  return Number.isFinite(value) && value > 0 ? value : 1_800_000
 }
 
 export function formatImportFileError(file: string, error: FSUtil.Error) {
@@ -182,49 +194,153 @@ const runImport = Effect.fn("Cli.import.body")(function* (file: string, ctx: Ins
     directory: ctx.directory,
     path: path.relative(path.resolve(ctx.worktree), ctx.directory).replaceAll("\\", "/"),
   }) as Session.Info
-  const row = Session.toRow(info)
-  yield* db
-    .insert(SessionTable)
-    .values(row)
-    .onConflictDoUpdate({
-      target: SessionTable.id,
-      set: { project_id: row.project_id, directory: row.directory, path: row.path },
-    })
-    .run()
-    .pipe(Effect.orDie)
-
-  for (const msg of exportData.messages) {
-    const msgInfo = decodeMessageInfo(msg.info) as SessionV1.Info
-    const { id, sessionID: _, ...msgData } = msgInfo
-    yield* db
-      .insert(MessageTable)
-      .values({
-        id,
-        session_id: row.id,
-        time_created: msgInfo.time?.created ?? Date.now(),
-        data: msgData as never,
-      })
-      .onConflictDoNothing()
-      .run()
-      .pipe(Effect.orDie)
-
-    for (const part of msg.parts) {
-      const partInfo = decodePart(part) as SessionV1.Part
-      const { id: partId, sessionID: _s, messageID, ...partData } = partInfo
-      yield* db
-        .insert(PartTable)
-        .values({
-          id: partId,
-          message_id: messageID,
-          session_id: row.id,
-          data: partData,
-        })
-        .onConflictDoNothing()
-        .run()
-        .pipe(Effect.orDie)
-    }
-  }
+  yield* writeImport(db, info, exportData.messages)
 
   process.stdout.write(`Imported session: ${exportData.info.id}`)
   process.stdout.write(EOL)
 })
+
+export function writeImport(
+  db: Database.Interface["db"],
+  info: Session.Info,
+  messages: ExportData["messages"],
+): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const row = Session.toRow(info)
+    yield* db
+      .transaction(
+        (tx) =>
+          Effect.gen(function* () {
+            const existing = yield* tx
+              .select()
+              .from(SessionTable)
+              .where(eq(SessionTable.id, row.id))
+              .get()
+              .pipe(Effect.orDie)
+            const liveArchiveFieldsPresent =
+              existing !== undefined &&
+              (existing.time_archived !== null ||
+                existing.family_archive_id !== null ||
+                existing.archive_cause !== null ||
+                existing.archive_state !== null ||
+                existing.archive_state_at !== null)
+
+            const exemptIDs = [row.id, ...(info.parentID ? [info.parentID] : [])]
+            const expiresAt = Date.now() + importExemptionMs()
+            for (const sessionID of exemptIDs) {
+              yield* tx
+                .insert(SessionImportExemptTable)
+                .values({ session_id: sessionID, expires_at: expiresAt })
+                .onConflictDoUpdate({
+                  target: SessionImportExemptTable.session_id,
+                  set: { expires_at: expiresAt },
+                })
+                .run()
+                .pipe(Effect.orDie)
+            }
+
+            if (!liveArchiveFieldsPresent) {
+              yield* tx
+                .insert(SessionArchiveGuardTable)
+                .values({ session_id: row.id })
+                .onConflictDoNothing()
+                .run()
+                .pipe(Effect.orDie)
+            }
+
+            // The row starts unarchived so the content inserts are not rejected; the archive
+            // fields are restored after the messages and parts land.
+            yield* tx
+              .insert(SessionTable)
+              .values({
+                ...row,
+                time_archived: null,
+                family_archive_id: null,
+                archive_cause: null,
+                archive_state: null,
+                archive_state_at: null,
+              })
+              .onConflictDoUpdate({
+                target: SessionTable.id,
+                set: { project_id: row.project_id, directory: row.directory, path: row.path },
+              })
+              .run()
+              .pipe(Effect.orDie)
+
+            for (const msg of messages) {
+              const msgInfo = decodeMessageInfo(msg.info) as SessionV1.Info
+              const { id, sessionID: _, ...msgData } = msgInfo
+              yield* tx
+                .insert(MessageTable)
+                .values({
+                  id,
+                  session_id: row.id,
+                  time_created: msgInfo.time?.created ?? Date.now(),
+                  data: msgData as never,
+                })
+                .onConflictDoNothing()
+                .run()
+                .pipe(Effect.orDie)
+
+              for (const part of msg.parts) {
+                const partInfo = decodePart(part) as SessionV1.Part
+                const { id: partId, sessionID: _s, messageID, ...partData } = partInfo
+                yield* tx
+                  .insert(PartTable)
+                  .values({
+                    id: partId,
+                    message_id: messageID,
+                    session_id: row.id,
+                    data: partData,
+                  })
+                  .onConflictDoNothing()
+                  .run()
+                  .pipe(Effect.orDie)
+              }
+            }
+
+            if (liveArchiveFieldsPresent) {
+              yield* Effect.logInfo("session import archive restore skipped", {
+                session_id: row.id,
+                export: {
+                  time_archived: row.time_archived,
+                  family_archive_id: row.family_archive_id,
+                  archive_cause: row.archive_cause,
+                },
+                live: {
+                  time_archived: existing.time_archived,
+                  family_archive_id: existing.family_archive_id,
+                  archive_cause: existing.archive_cause,
+                },
+              })
+            } else {
+              yield* tx
+                .update(SessionTable)
+                .set({
+                  time_archived: row.time_archived,
+                  family_archive_id: row.family_archive_id,
+                  archive_cause: row.archive_cause,
+                })
+                .where(eq(SessionTable.id, row.id))
+                .run()
+                .pipe(Effect.orDie)
+              yield* tx
+                .delete(SessionArchiveGuardTable)
+                .where(eq(SessionArchiveGuardTable.session_id, row.id))
+                .run()
+                .pipe(Effect.orDie)
+            }
+
+            for (const sessionID of exemptIDs) {
+              yield* tx
+                .delete(SessionImportExemptTable)
+                .where(eq(SessionImportExemptTable.session_id, sessionID))
+                .run()
+                .pipe(Effect.orDie)
+            }
+          }),
+        { behavior: "immediate" },
+      )
+      .pipe(Effect.orDie)
+  }).pipe(Effect.orDie)
+}

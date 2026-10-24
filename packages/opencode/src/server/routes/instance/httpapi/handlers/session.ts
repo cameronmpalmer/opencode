@@ -6,6 +6,7 @@ import { Command } from "@/command"
 import { Permission } from "@/permission"
 import { SessionShare } from "@/share/session"
 import { Session } from "@/session/session"
+import { RuntimeFlags } from "@/effect/runtime-flags"
 import { SessionCompaction } from "@/session/compaction"
 import { MessageV2 } from "@/session/message-v2"
 import { SessionPrompt } from "@/session/prompt"
@@ -36,7 +37,7 @@ import {
   SummarizePayload,
   UpdatePayload,
 } from "../groups/session"
-import { PermissionNotFoundError } from "../errors"
+import { FeatureDisabledError, PermissionNotFoundError } from "../errors"
 import * as SessionError from "./session-errors"
 
 const tryParseJson = (text: string) =>
@@ -59,6 +60,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const todoSvc = yield* Todo.Service
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
+    const flags = yield* RuntimeFlags.Service
     const scope = yield* Scope.Scope
 
     const list = Effect.fn("SessionHttpApi.list")(function* (ctx: { query: typeof ListQuery.Type }) {
@@ -185,22 +187,65 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       payload: typeof UpdatePayload.Type
     }) {
       const current = yield* requireSession(ctx.params.sessionID)
-      if (ctx.payload.title !== undefined) {
-        yield* session.setTitle({ sessionID: ctx.params.sessionID, title: ctx.payload.title })
+      const archived = current.time.archived != null
+      // Mixed payloads only apply non-archive fields while the session is live.
+      if (!archived) {
+        if (ctx.payload.title !== undefined) {
+          yield* session.setTitle({ sessionID: ctx.params.sessionID, title: ctx.payload.title })
+        }
+        if (ctx.payload.metadata !== undefined) {
+          yield* session.setMetadata({ sessionID: ctx.params.sessionID, metadata: ctx.payload.metadata })
+        }
+        if (ctx.payload.permission !== undefined) {
+          yield* session.setPermission({
+            sessionID: ctx.params.sessionID,
+            permission: Permission.merge(current.permission ?? [], ctx.payload.permission),
+          })
+        }
       }
-      if (ctx.payload.metadata !== undefined) {
-        yield* session.setMetadata({ sessionID: ctx.params.sessionID, metadata: ctx.payload.metadata })
-      }
-      if (ctx.payload.permission !== undefined) {
-        yield* session.setPermission({
-          sessionID: ctx.params.sessionID,
-          permission: Permission.merge(current.permission ?? [], ctx.payload.permission),
-        })
-      }
-      if (ctx.payload.time?.archived !== undefined) {
-        yield* session.setArchived({ sessionID: ctx.params.sessionID, time: ctx.payload.time.archived })
+      const requested = ctx.payload.time?.archived
+      if (requested !== undefined && flags.familyArchive) {
+        if (requested === null) {
+          yield* SessionError.mapArchiveErrors(session.unarchiveSubtree({ sessionID: ctx.params.sessionID }))
+        } else {
+          yield* SessionError.mapArchiveErrors(
+            session.archiveSubtree({ sessionID: ctx.params.sessionID, archivedAt: requested }),
+          )
+        }
+      } else if (requested !== undefined) {
+        yield* SessionError.mapArchiveErrors(
+          session.setArchived({ sessionID: ctx.params.sessionID, time: requested ?? undefined }),
+        )
       }
       return yield* requireSession(ctx.params.sessionID)
+    })
+
+    const requireFamilyArchive = Effect.fn("SessionHttpApi.requireFamilyArchive")(function* () {
+      if (!flags.familyArchive) {
+        return yield* new FeatureDisabledError({
+          feature: "familyArchive",
+          message: "Family archive is not enabled",
+        })
+      }
+    })
+
+    const archivePreview = Effect.fn("SessionHttpApi.archivePreview")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      yield* requireFamilyArchive()
+      yield* requireSession(ctx.params.sessionID)
+      return yield* SessionError.mapArchiveErrors(session.archivePreview({ sessionID: ctx.params.sessionID }))
+    })
+
+    const archive = Effect.fn("SessionHttpApi.archive")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* requireFamilyArchive()
+      yield* requireSession(ctx.params.sessionID)
+      return yield* SessionError.mapArchiveErrors(session.archiveSubtree({ sessionID: ctx.params.sessionID }))
+    })
+
+    const unarchive = Effect.fn("SessionHttpApi.unarchive")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* requireSession(ctx.params.sessionID)
+      return yield* SessionError.mapArchiveErrors(session.unarchiveSubtree({ sessionID: ctx.params.sessionID }))
     })
 
     const fork = Effect.fn("SessionHttpApi.fork")(function* (ctx: {
@@ -422,6 +467,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handleRaw("create", createRaw)
       .handle("remove", remove)
       .handle("update", update)
+      .handle("archivePreview", archivePreview)
+      .handle("archive", archive)
+      .handle("unarchive", unarchive)
       .handleRaw("fork", forkRaw)
       .handle("abort", abort)
       .handle("init", init)

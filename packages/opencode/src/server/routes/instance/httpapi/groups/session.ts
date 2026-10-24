@@ -20,7 +20,7 @@ import {
   WorkspaceRoutingQuery,
   WorkspaceRoutingQueryFields,
 } from "../middleware/workspace-routing"
-import { ApiNotFoundError, PermissionNotFoundError, SessionBusyError } from "../errors"
+import { ApiNotFoundError, FeatureDisabledError, PermissionNotFoundError, SessionBusyError } from "../errors"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -52,7 +52,7 @@ export const UpdatePayload = Schema.Struct({
   permission: Schema.optional(PermissionV1.Ruleset),
   time: Schema.optional(
     Schema.Struct({
-      archived: Schema.optional(Session.ArchivedTimestamp),
+      archived: Schema.optional(Schema.NullOr(Session.ArchivedTimestamp)),
     }),
   ),
 })
@@ -87,6 +87,9 @@ export const SessionPaths = {
   create: root,
   remove: `${root}/:sessionID`,
   update: `${root}/:sessionID`,
+  archivePreview: `${root}/:sessionID/archive-preview`,
+  archive: `${root}/:sessionID/archive`,
+  unarchive: `${root}/:sessionID/unarchive`,
   fork: `${root}/:sessionID/fork`,
   abort: `${root}/:sessionID/abort`,
   share: `${root}/:sessionID/share`,
@@ -229,12 +232,78 @@ export const SessionApi = HttpApi.make("session")
           query: WorkspaceRoutingQuery,
           payload: UpdatePayload,
           success: described(Session.Info, "Successfully updated session"),
-          error: [HttpApiError.BadRequest, ApiNotFoundError],
+          error: [
+            HttpApiError.BadRequest,
+            ApiNotFoundError,
+            Session.FamilyMemberError,
+            Session.ArchiveInProgressError,
+            Session.ArchiveBlockedError,
+            Session.InvalidArchiveTimeError,
+          ],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.update",
             summary: "Update session",
             description: "Update properties of an existing session, such as title or other metadata.",
+          }),
+        ),
+        HttpApiEndpoint.get("archivePreview", SessionPaths.archivePreview, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(Session.ArchivePreview, "Archive preview"),
+          error: [
+            HttpApiError.BadRequest,
+            ApiNotFoundError,
+            FeatureDisabledError,
+            Session.FamilyMemberError,
+            Session.ArchiveInProgressError,
+            Session.ArchiveBlockedError,
+            Session.InvalidArchiveTimeError,
+          ],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.archivePreview",
+            summary: "Preview family archive",
+            description: "Count the descendants and active runs that archiving this session would affect.",
+          }),
+        ),
+        HttpApiEndpoint.post("archive", SessionPaths.archive, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(Session.ArchiveResult, "Archived family"),
+          error: [
+            HttpApiError.BadRequest,
+            ApiNotFoundError,
+            FeatureDisabledError,
+            Session.FamilyMemberError,
+            Session.ArchiveInProgressError,
+            Session.ArchiveBlockedError,
+            Session.InvalidArchiveTimeError,
+          ],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.archive",
+            summary: "Archive family",
+            description: "Archive a session and every descendant, cancelling active runs in the subtree.",
+          }),
+        ),
+        HttpApiEndpoint.post("unarchive", SessionPaths.unarchive, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(Session.UnarchiveResult, "Unarchived family"),
+          error: [
+            HttpApiError.BadRequest,
+            ApiNotFoundError,
+            Session.FamilyMemberError,
+            Session.ArchiveInProgressError,
+            Session.ArchiveBlockedError,
+            Session.InvalidArchiveTimeError,
+          ],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.unarchive",
+            summary: "Unarchive family",
+            description: "Restore a session and the cascade members of its family.",
           }),
         ),
         HttpApiEndpoint.post("fork", SessionPaths.fork, {

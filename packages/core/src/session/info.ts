@@ -46,5 +46,9 @@ export function fromRow(row: typeof SessionTable.$inferSelect): SessionSchema.In
       updated: DateTime.makeUnsafe(row.time_updated),
       archived: row.time_archived ? DateTime.makeUnsafe(row.time_archived) : undefined,
     },
+    familyArchiveID: row.family_archive_id ? SessionSchema.ID.make(row.family_archive_id) : undefined,
+    archiveCause: row.archive_cause ?? undefined,
+    archiveState: row.archive_state ?? undefined,
+    archiveStateAt: row.archive_state_at ?? undefined,
   })
 }

@@ -35,12 +35,16 @@ export const Info = Schema.Struct({
   time: Schema.Struct({
     created: DateTimeUtcFromMillis,
     updated: DateTimeUtcFromMillis,
-    archived: DateTimeUtcFromMillis.pipe(optional),
+    archived: Schema.NullOr(DateTimeUtcFromMillis).pipe(optional),
   }),
   title: Schema.String,
   location: Location.Ref,
   subpath: RelativePath.pipe(optional),
   revert: Revert.State.pipe(optional),
+  familyArchiveID: Schema.NullOr(ID).pipe(optional),
+  archiveCause: Schema.NullOr(Schema.Literals(["user", "cascade", "migration"])).pipe(optional),
+  archiveState: Schema.NullOr(Schema.Literal("archiving")).pipe(optional),
+  archiveStateAt: Schema.NullOr(Schema.Finite).pipe(optional),
 }).annotate({ identifier: "SessionV2.Info" })
 
 export const ListAnchor = Schema.Struct({

@@ -12,6 +12,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV2 } from "@opencode-ai/core/session"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
+import { SessionExecution } from "@opencode-ai/core/session/execution"
 import { locationServiceMapLayer } from "@opencode-ai/core/location-services"
 
 import { NotFoundError } from "@/storage/storage"
@@ -26,7 +27,13 @@ import { inArray } from "drizzle-orm"
 import { lt } from "drizzle-orm"
 import { or } from "drizzle-orm"
 import type { SQL } from "drizzle-orm"
-import { PartTable, SessionArchiveGuardTable, SessionTable } from "@opencode-ai/core/session/sql"
+import {
+  FamilyArchiveMigrationTable,
+  PartTable,
+  SessionArchiveGuardTable,
+  SessionRunLeaseTable,
+  SessionTable,
+} from "@opencode-ai/core/session/sql"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { MessageV2 } from "./message-v2"
 import type { InstanceContext } from "../project/instance-context"
@@ -35,6 +42,7 @@ import { Snapshot } from "@/snapshot"
 import { ProjectV2 } from "@opencode-ai/core/project"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { SessionID, MessageID, PartID } from "./schema"
+import { SessionStatus } from "./status"
 
 import type { Provider } from "@/provider/provider"
 import { Global } from "@opencode-ai/core/global"
@@ -114,6 +122,10 @@ export function fromRow(row: SessionRow): Info {
       compacting: row.time_compacting ?? undefined,
       archived: row.time_archived ?? undefined,
     },
+    familyArchiveID: row.family_archive_id ?? undefined,
+    archiveCause: row.archive_cause ?? undefined,
+    archiveState: row.archive_state ?? undefined,
+    archiveStateAt: row.archive_state_at ?? undefined,
   }
 }
 
@@ -154,7 +166,11 @@ export function toRow(info: Info) {
     time_created: info.time.created,
     time_updated: info.time.updated,
     time_compacting: info.time.compacting,
-    time_archived: info.time.archived,
+    time_archived: info.time.archived ?? null,
+    family_archive_id: info.familyArchiveID ?? null,
+    archive_cause: info.archiveCause ?? null,
+    archive_state: info.archiveState ?? null,
+    archive_state_at: info.archiveStateAt ?? null,
   }
 }
 
@@ -203,7 +219,7 @@ const Time = Schema.Struct({
   created: NonNegativeInt,
   updated: NonNegativeInt,
   compacting: optional(NonNegativeInt),
-  archived: optional(ArchivedTimestamp),
+  archived: optional(Schema.NullOr(ArchivedTimestamp)),
 })
 
 const Revert = Schema.Struct({
@@ -241,6 +257,10 @@ export const Info = Schema.Struct({
   time: Time,
   permission: optional(PermissionV1.Ruleset),
   revert: optional(Revert),
+  familyArchiveID: optional(Schema.NullOr(SessionID)),
+  archiveCause: optional(Schema.NullOr(Schema.Literals(["user", "cascade", "migration"]))),
+  archiveState: optional(Schema.NullOr(Schema.Literal("archiving"))),
+  archiveStateAt: optional(Schema.NullOr(Schema.Finite)),
 }).annotate({ identifier: "Session" })
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -410,6 +430,87 @@ export class BusyError extends Schema.TaggedErrorClass<BusyError>()("SessionBusy
   sessionID: SessionID,
 }) {}
 
+export class FamilyMemberError extends Schema.TaggedErrorClass<FamilyMemberError>()(
+  "SessionFamilyMemberError",
+  {
+    sessionID: SessionID,
+    familyRootID: SessionID,
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
+
+export class ArchiveInProgressError extends Schema.TaggedErrorClass<ArchiveInProgressError>()(
+  "SessionArchiveInProgressError",
+  {
+    sessionID: SessionID,
+    sessionIDs: Schema.Array(SessionID),
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
+
+export class ArchiveBlockedError extends Schema.TaggedErrorClass<ArchiveBlockedError>()(
+  "SessionArchiveBlockedError",
+  {
+    sessionID: SessionID,
+    sessionIDs: Schema.Array(SessionID),
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
+
+export class InvalidArchiveTimeError extends Schema.TaggedErrorClass<InvalidArchiveTimeError>()(
+  "SessionInvalidArchiveTimeError",
+  {
+    sessionID: SessionID,
+    message: Schema.String,
+  },
+  { httpApiStatus: 400 },
+) {}
+
+export const ArchivePreview = Schema.Struct({
+  root_id: SessionID,
+  descendant_count: Schema.Finite,
+  active_count: Schema.Finite,
+  active_session_ids: Schema.Array(SessionID),
+})
+export type ArchivePreview = Schema.Schema.Type<typeof ArchivePreview>
+
+export const ArchiveResult = Schema.Struct({
+  root_id: SessionID,
+  archived_ids: Schema.Array(SessionID),
+  already_archived_ids: Schema.Array(SessionID),
+  cancelled_ids: Schema.Array(SessionID),
+  archive_time: Schema.Finite,
+})
+export type ArchiveResult = Schema.Schema.Type<typeof ArchiveResult>
+
+export const UnarchiveResult = Schema.Struct({
+  root_id: SessionID,
+  restored_ids: Schema.Array(SessionID),
+  still_archived_ids: Schema.Array(SessionID),
+})
+export type UnarchiveResult = Schema.Schema.Type<typeof UnarchiveResult>
+
+export type FamilyError = FamilyMemberError | ArchiveInProgressError | ArchiveBlockedError | InvalidArchiveTimeError
+
+const asFamilyError = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, FamilyError | NotFound, R> =>
+  effect.pipe(
+    Effect.catch((error) => {
+      if (
+        error instanceof NotFoundError ||
+        error instanceof FamilyMemberError ||
+        error instanceof ArchiveInProgressError ||
+        error instanceof ArchiveBlockedError ||
+        error instanceof InvalidArchiveTimeError
+      ) {
+        return Effect.fail(error)
+      }
+      return Effect.die(error)
+    }),
+  )
+
 export type NotFound = NotFoundError
 
 export interface Interface {
@@ -428,7 +529,14 @@ export interface Interface {
   readonly touch: (sessionID: SessionID) => Effect.Effect<void>
   readonly get: (id: SessionID) => Effect.Effect<Info, NotFound>
   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
-  readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
+  readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void, FamilyError | NotFound>
+  readonly archivePreview: (input: { sessionID: SessionID }) => Effect.Effect<ArchivePreview, FamilyError | NotFound>
+  readonly archiveSubtree: (input: {
+    sessionID: SessionID
+    archivedAt?: number
+    waitTimeoutMs?: number
+  }) => Effect.Effect<ArchiveResult, FamilyError | NotFound>
+  readonly unarchiveSubtree: (input: { sessionID: SessionID }) => Effect.Effect<UnarchiveResult, FamilyError | NotFound>
   readonly setMetadata: (input: typeof SetMetadataInput.Type) => Effect.Effect<void>
   readonly setAgentModel: (input: {
     sessionID: SessionID
@@ -488,7 +596,7 @@ export type Patch = Omit<Partial<Info>, "time" | "share" | "summary" | "revert" 
 const layer: Layer.Layer<
   Service,
   never,
-  BackgroundJob.Service | RuntimeFlags.Service | Database.Service | EventV2Bridge.Service
+  BackgroundJob.Service | RuntimeFlags.Service | Database.Service | EventV2Bridge.Service | SessionStatus.Service
 > = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -497,6 +605,7 @@ const layer: Layer.Layer<
     const background = yield* BackgroundJob.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const status = yield* SessionStatus.Service
 
     const createNext = Effect.fn("Session.createNext")(function* (input: {
       id?: SessionID
@@ -756,23 +865,583 @@ const layer: Layer.Layer<
       yield* patch(input.sessionID, { title: input.title }).pipe(Effect.orDie)
     })
 
-    const setArchived = Effect.fn("Session.setArchived")(function* (input: { sessionID: SessionID; time?: number }) {
-      yield* db
-        .transaction((tx) =>
-          Effect.gen(function* () {
-            yield* tx
-              .insert(SessionArchiveGuardTable)
-              .values({ session_id: input.sessionID })
-              .onConflictDoNothing()
-              .run()
-            yield* patch(input.sessionID, { time: { archived: input.time } }).pipe(Effect.orDie)
-            yield* tx
-              .delete(SessionArchiveGuardTable)
-              .where(eq(SessionArchiveGuardTable.session_id, input.sessionID))
-              .run()
-          }),
+    type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0]
+    type ArchiveOverride = {
+      archived?: number | null
+      familyArchiveID?: SessionID | null
+      archiveCause?: "user" | "cascade" | "migration" | null
+      archiveState?: "archiving" | null
+      archiveStateAt?: number | null
+    }
+
+    const LIVE_LEASE_MS = 60_000
+
+    const subtreeIDs = (tx: Tx, rootID: SessionID) =>
+      tx
+        .all<{ id: string }>(
+          sql`
+          WITH RECURSIVE subtree(id) AS (
+            SELECT id FROM session WHERE id = ${rootID}
+            UNION ALL
+            SELECT session.id FROM session JOIN subtree ON session.parent_id = subtree.id
+          )
+          SELECT id FROM subtree
+        `,
         )
         .pipe(Effect.orDie)
+
+    const loadSubtree = (tx: Tx, rootID: SessionID) =>
+      Effect.gen(function* () {
+        const ids = yield* subtreeIDs(tx, rootID)
+        if (ids.length === 0) return [] as SessionRow[]
+        return yield* tx
+          .select()
+          .from(SessionTable)
+          .where(
+            inArray(
+              SessionTable.id,
+              ids.map((row) => row.id as SessionID),
+            ),
+          )
+          .all()
+          .pipe(Effect.orDie)
+      })
+
+    const orderSubtree = (rows: SessionRow[]) => {
+      const byID = new Map(rows.map((row) => [row.id, row]))
+      const depth = (row: SessionRow) => {
+        let value = 0
+        let parent = row.parent_id
+        const seen = new Set<string>([row.id])
+        while (parent && byID.has(parent) && !seen.has(parent)) {
+          seen.add(parent)
+          value += 1
+          parent = byID.get(parent)!.parent_id
+        }
+        return value
+      }
+      return [...rows].sort((a, b) => depth(a) - depth(b) || a.id.localeCompare(b.id))
+    }
+
+    const liveLeases = (tx: Tx, ids: SessionID[]) =>
+      ids.length === 0
+        ? Effect.succeed([])
+        : tx
+            .select()
+            .from(SessionRunLeaseTable)
+            .where(
+              and(
+                inArray(SessionRunLeaseTable.session_id, ids),
+                gte(SessionRunLeaseTable.heartbeat_at, Date.now() - LIVE_LEASE_MS),
+              ),
+            )
+            .all()
+            .pipe(Effect.orDie)
+
+    const infoFor = (row: SessionRow, override?: ArchiveOverride): Info => {
+      const base = fromRow(row)
+      return {
+        ...base,
+        time: override?.archived !== undefined ? { ...base.time, archived: override.archived } : base.time,
+        ...(override?.familyArchiveID !== undefined ? { familyArchiveID: override.familyArchiveID } : {}),
+        ...(override?.archiveCause !== undefined ? { archiveCause: override.archiveCause } : {}),
+        ...(override?.archiveState !== undefined ? { archiveState: override.archiveState } : {}),
+        ...(override?.archiveStateAt !== undefined ? { archiveStateAt: override.archiveStateAt } : {}),
+      } as Info
+    }
+
+    // Publish inside the caller's immediate transaction. The guard rows are visible to the
+    // projector and are removed before the caller commits.
+    const publishRows = (tx: Tx, rows: { row: SessionRow; override?: ArchiveOverride }[]) =>
+      Effect.gen(function* () {
+        if (rows.length === 0) return
+        const ids = rows.map((entry) => entry.row.id as SessionID)
+        yield* tx
+          .insert(SessionArchiveGuardTable)
+          .values(rows.map((entry) => ({ session_id: entry.row.id })))
+          .onConflictDoNothing()
+          .run()
+          .pipe(Effect.orDie)
+        for (const entry of rows) {
+          const info = infoFor(entry.row, entry.override)
+          yield* events.publish(SessionV1.Event.Updated, {
+            sessionID: info.id,
+            info: info as unknown as SessionV1.SessionInfo,
+          })
+        }
+        yield* tx
+          .delete(SessionArchiveGuardTable)
+          .where(inArray(SessionArchiveGuardTable.session_id, ids))
+          .run()
+          .pipe(Effect.orDie)
+      })
+
+    const setArchived = Effect.fn("Session.setArchived")(function* (input: { sessionID: SessionID; time?: number }) {
+      yield* asFamilyError(
+        db.transaction(
+          (tx) =>
+            Effect.gen(function* () {
+              const row = yield* tx
+                .select()
+                .from(SessionTable)
+                .where(eq(SessionTable.id, input.sessionID))
+                .get()
+                .pipe(Effect.orDie)
+              if (!row)
+                return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${input.sessionID}` }))
+              if (
+                input.time !== undefined &&
+                row.archive_cause !== null &&
+                row.archive_cause !== "user" &&
+                row.family_archive_id !== null &&
+                row.family_archive_id !== row.id
+              ) {
+                return yield* Effect.fail(
+                  new FamilyMemberError({
+                    sessionID: row.id,
+                    familyRootID: row.family_archive_id,
+                    message: `Session ${row.id} belongs to family ${row.family_archive_id}; archive the family root instead`,
+                  }),
+                )
+              }
+              yield* tx
+                .insert(SessionArchiveGuardTable)
+                .values({ session_id: input.sessionID })
+                .onConflictDoNothing()
+                .run()
+              yield* patch(input.sessionID, {
+                time: { archived: input.time ?? null },
+                archiveCause: input.time !== undefined ? "user" : null,
+                familyArchiveID: null,
+                archiveState: null,
+                archiveStateAt: null,
+              }).pipe(Effect.orDie)
+              yield* tx
+                .delete(SessionArchiveGuardTable)
+                .where(eq(SessionArchiveGuardTable.session_id, input.sessionID))
+                .run()
+            }),
+          { behavior: "immediate" },
+        ),
+      )
+    })
+
+    const isDirectFamilyMember = (row: SessionRow) =>
+      row.archive_cause !== null &&
+      row.archive_cause !== "user" &&
+      row.family_archive_id !== null &&
+      row.family_archive_id !== row.id
+
+    const archivePreview = Effect.fn("Session.archivePreview")(function* (input: { sessionID: SessionID }) {
+      const root = yield* db
+        .select()
+        .from(SessionTable)
+        .where(eq(SessionTable.id, input.sessionID))
+        .get()
+        .pipe(Effect.orDie)
+      if (!root) return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${input.sessionID}` }))
+      if (isDirectFamilyMember(root)) {
+        return yield* Effect.fail(
+          new FamilyMemberError({
+            sessionID: root.id,
+            familyRootID: root.family_archive_id!,
+            message: `Session ${root.id} belongs to family ${root.family_archive_id}; preview the family root instead`,
+          }),
+        )
+      }
+      const rows = yield* loadSubtree(db as unknown as Tx, root.id)
+      const ids = rows.map((row) => row.id as SessionID)
+      const leases = yield* liveLeases(db as unknown as Tx, ids)
+      const local = new Set<string>([...((yield* status.list()).keys() as Iterable<string>)])
+      const active = new Set<string>(leases.map((lease) => lease.session_id))
+      for (const id of ids) if (local.has(id)) active.add(id)
+      if (local.has(root.id)) active.add(root.id)
+      const activeIDs = [...active].filter((id) => ids.includes(id as SessionID)).sort()
+      return {
+        root_id: root.id,
+        descendant_count: Math.max(rows.length - 1, 0),
+        active_count: activeIDs.length,
+        active_session_ids: activeIDs as SessionID[],
+      }
+    })
+
+    const archiveSubtree = Effect.fn("Session.archiveSubtree")(function* (input: {
+      sessionID: SessionID
+      archivedAt?: number
+      waitTimeoutMs?: number
+    }) {
+      const now = Date.now()
+
+      const step1 = yield* asFamilyError(
+        db.transaction(
+          (tx) =>
+            Effect.gen(function* () {
+              const root = yield* tx
+                .select()
+                .from(SessionTable)
+                .where(eq(SessionTable.id, input.sessionID))
+                .get()
+                .pipe(Effect.orDie)
+              if (!root)
+                return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${input.sessionID}` }))
+              if (isDirectFamilyMember(root)) {
+                return yield* Effect.fail(
+                  new FamilyMemberError({
+                    sessionID: root.id,
+                    familyRootID: root.family_archive_id!,
+                    message: `Session ${root.id} belongs to family ${root.family_archive_id}; archive the family root instead`,
+                  }),
+                )
+              }
+              const rows = yield* loadSubtree(tx, root.id)
+              const archiving = rows.filter((row) => row.archive_state === "archiving")
+              if (archiving.length > 0) {
+                return yield* Effect.fail(
+                  new ArchiveInProgressError({
+                    sessionID: root.id,
+                    sessionIDs: archiving.map((row) => row.id as SessionID),
+                    message: `Archive already in progress for ${archiving.map((row) => row.id).join(", ")}`,
+                  }),
+                )
+              }
+              const allArchived = rows.every((row) => row.time_archived !== null)
+              const leases = yield* liveLeases(
+                tx,
+                rows.map((row) => row.id as SessionID),
+              )
+
+              let archiveTime = root.time_archived ?? now
+              if (root.time_archived === null && input.archivedAt !== undefined) {
+                if (input.archivedAt < root.time_created) {
+                  return yield* Effect.fail(
+                    new InvalidArchiveTimeError({
+                      sessionID: root.id,
+                      message: `archive time ${input.archivedAt} precedes session creation ${root.time_created}`,
+                    }),
+                  )
+                }
+                archiveTime = Math.min(input.archivedAt, now)
+              }
+
+              if (allArchived && leases.length === 0) {
+                return { shortCircuit: true as const, rows, archiveTime, leases }
+              }
+
+              // A fully archived family still walks the cancellation path, but keeps its archive
+              // fields and timestamps untouched.
+              const marked = allArchived ? rows : rows.filter((row) => row.time_archived === null)
+              if (marked.length > 0) {
+                yield* tx
+                  .update(SessionTable)
+                  .set({ archive_state: "archiving", archive_state_at: now })
+                  .where(
+                    inArray(
+                      SessionTable.id,
+                      marked.map((row) => row.id as SessionID),
+                    ),
+                  )
+                  .run()
+                  .pipe(Effect.orDie)
+                yield* publishRows(
+                  tx,
+                  marked.map((row) => ({
+                    row,
+                    override: { archiveState: "archiving", archiveStateAt: now },
+                  })),
+                )
+              }
+              return { shortCircuit: false as const, rows, archiveTime, leases }
+            }),
+          { behavior: "immediate" },
+        ),
+      )
+
+      if (step1.shortCircuit) {
+        return {
+          root_id: input.sessionID,
+          archived_ids: [],
+          already_archived_ids: step1.rows.map((row) => row.id),
+          cancelled_ids: [],
+          archive_time: step1.archiveTime,
+        }
+      }
+
+      const subtree = step1.rows.map((row) => row.id as SessionID)
+      const cancelled = step1.leases.map((lease) => lease.session_id)
+
+      if (step1.leases.length > 0) {
+        yield* db
+          .update(SessionRunLeaseTable)
+          .set({ cancel_requested: 1 })
+          .where(
+            inArray(
+              SessionRunLeaseTable.session_id,
+              step1.leases.map((lease) => lease.session_id as SessionID),
+            ),
+          )
+          .run()
+          .pipe(Effect.orDie)
+        const execution = yield* Effect.serviceOption(SessionExecution.Service)
+        if (execution._tag === "Some") {
+          yield* Effect.forEach(
+            subtree,
+            (sessionID) => execution.value.interrupt(sessionID).pipe(Effect.catchCause(() => Effect.void)),
+            { concurrency: "unbounded", discard: true },
+          )
+        }
+
+        const timeout = input.waitTimeoutMs ?? 30_000
+        const deadline = Date.now() + timeout
+        let remaining = yield* liveLeases(db as unknown as Tx, subtree)
+        while (remaining.length > 0 && Date.now() < deadline) {
+          yield* Effect.sleep("25 millis")
+          remaining = yield* liveLeases(db as unknown as Tx, subtree)
+        }
+
+        if (remaining.length > 0) {
+          const blocking = remaining.map((lease) => lease.session_id as SessionID)
+          yield* asFamilyError(
+            db.transaction(
+              (tx) =>
+                Effect.gen(function* () {
+                  const marked = step1.rows
+                  if (marked.length > 0) {
+                    yield* tx
+                      .update(SessionTable)
+                      .set({ archive_state: null, archive_state_at: null })
+                      .where(
+                        inArray(
+                          SessionTable.id,
+                          marked.map((row) => row.id as SessionID),
+                        ),
+                      )
+                      .run()
+                      .pipe(Effect.orDie)
+                    yield* publishRows(
+                      tx,
+                      marked.map((row) => ({ row, override: { archiveState: null, archiveStateAt: null } })),
+                    )
+                  }
+                  for (const lease of remaining) {
+                    yield* tx
+                      .update(SessionRunLeaseTable)
+                      .set({ cancel_requested: 0 })
+                      .where(eq(SessionRunLeaseTable.session_id, lease.session_id))
+                      .run()
+                      .pipe(Effect.orDie)
+                  }
+                }),
+              { behavior: "immediate" },
+            ),
+          )
+          return yield* Effect.fail(
+            new ArchiveBlockedError({
+              sessionID: input.sessionID,
+              sessionIDs: blocking,
+              message: `Active sessions did not stop: ${blocking.join(", ")}`,
+            }),
+          )
+        }
+      }
+
+      return yield* asFamilyError(
+        db.transaction(
+          (tx) =>
+            Effect.gen(function* () {
+              const root = yield* tx
+                .select()
+                .from(SessionTable)
+                .where(eq(SessionTable.id, input.sessionID))
+                .get()
+                .pipe(Effect.orDie)
+              if (!root)
+                return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${input.sessionID}` }))
+              const rows = orderSubtree(yield* loadSubtree(tx, root.id))
+              const marked = new Set(step1.rows.map((row) => row.id))
+              const finalized = new Map<string, { familyKey: string; archiveTime: number }>()
+              const archivedIDs: SessionID[] = []
+              const alreadyArchivedIDs: SessionID[] = []
+              const changed: { row: SessionRow; override?: ArchiveOverride }[] = []
+
+              for (const row of rows) {
+                const next: Partial<SessionRow> = {}
+                if (row.time_archived === null) {
+                  const parent = row.parent_id ? finalized.get(row.parent_id) : undefined
+                  const familyKey = row.id === root.id ? root.id : (parent?.familyKey ?? root.id)
+                  const archiveTime =
+                    row.id === root.id ? step1.archiveTime : (parent?.archiveTime ?? step1.archiveTime)
+                  next.time_archived = archiveTime
+                  next.family_archive_id = familyKey as SessionRow["family_archive_id"]
+                  next.archive_cause = row.id === root.id ? (row.archive_cause ?? "user") : "cascade"
+                  archivedIDs.push(row.id as SessionID)
+                } else {
+                  alreadyArchivedIDs.push(row.id as SessionID)
+                  if (row.id === root.id) {
+                    next.family_archive_id = (row.family_archive_id ?? root.id) as SessionRow["family_archive_id"]
+                    next.archive_cause = row.archive_cause ?? "user"
+                  }
+                }
+                if (marked.has(row.id)) {
+                  next.archive_state = null
+                  next.archive_state_at = null
+                }
+                if (Object.keys(next).length > 0) {
+                  yield* tx
+                    .update(SessionTable)
+                    .set(next as never)
+                    .where(eq(SessionTable.id, row.id))
+                    .run()
+                    .pipe(Effect.orDie)
+                }
+                const merged = { ...row, ...next } as SessionRow
+                finalized.set(row.id, {
+                  familyKey: (merged.family_archive_id ?? merged.id) as string,
+                  archiveTime: merged.time_archived as number,
+                })
+                changed.push({
+                  row: merged,
+                  override: { archiveState: null, archiveStateAt: null },
+                })
+              }
+
+              yield* publishRows(tx, changed)
+              yield* tx
+                .insert(FamilyArchiveMigrationTable)
+                .values({ root_session_id: root.id, root_archived_at: step1.archiveTime, applied_at: now })
+                .onConflictDoUpdate({
+                  target: FamilyArchiveMigrationTable.root_session_id,
+                  set: { root_archived_at: step1.archiveTime, applied_at: now },
+                })
+                .run()
+                .pipe(Effect.orDie)
+
+              return {
+                root_id: root.id,
+                archived_ids: archivedIDs,
+                already_archived_ids: alreadyArchivedIDs,
+                cancelled_ids: cancelled,
+                archive_time: step1.archiveTime,
+              }
+            }),
+          { behavior: "immediate" },
+        ),
+      )
+    })
+
+    const unarchiveSubtree = Effect.fn("Session.unarchiveSubtree")(function* (input: { sessionID: SessionID }) {
+      return yield* asFamilyError(
+        db.transaction(
+          (tx) =>
+            Effect.gen(function* () {
+              const root = yield* tx
+                .select()
+                .from(SessionTable)
+                .where(eq(SessionTable.id, input.sessionID))
+                .get()
+                .pipe(Effect.orDie)
+              if (!root)
+                return yield* Effect.fail(new NotFoundError({ message: `Session not found: ${input.sessionID}` }))
+
+              let missingFamilyRoot: string | undefined
+              if (root.family_archive_id !== null && root.family_archive_id !== root.id) {
+                const familyRoot = yield* tx
+                  .select({ id: SessionTable.id })
+                  .from(SessionTable)
+                  .where(eq(SessionTable.id, root.family_archive_id))
+                  .get()
+                  .pipe(Effect.orDie)
+                if (familyRoot) {
+                  return yield* Effect.fail(
+                    new FamilyMemberError({
+                      sessionID: root.id,
+                      familyRootID: root.family_archive_id,
+                      message: `Session ${root.id} belongs to family ${root.family_archive_id}; unarchive the family root instead`,
+                    }),
+                  )
+                }
+                missingFamilyRoot = root.family_archive_id
+              }
+
+              const rows = orderSubtree(yield* loadSubtree(tx, root.id))
+              const archiving = rows.filter((row) => row.archive_state === "archiving")
+              if (archiving.length > 0) {
+                return yield* Effect.fail(
+                  new ArchiveInProgressError({
+                    sessionID: root.id,
+                    sessionIDs: archiving.map((row) => row.id as SessionID),
+                    message: `Archive in progress for ${archiving.map((row) => row.id).join(", ")}`,
+                  }),
+                )
+              }
+
+              const restore = rows.filter((row) => {
+                if (row.time_archived === null) return false
+                if (row.id === root.id) {
+                  if (missingFamilyRoot) return true
+                  return row.family_archive_id === null || row.family_archive_id === root.id
+                }
+                if (row.archive_cause !== "cascade" && row.archive_cause !== "migration") return false
+                if (missingFamilyRoot) return row.family_archive_id === missingFamilyRoot
+                return row.family_archive_id === root.id
+              })
+
+              if (restore.length > 0) {
+                yield* tx
+                  .update(SessionTable)
+                  .set({
+                    time_archived: null,
+                    family_archive_id: null,
+                    archive_cause: null,
+                    archive_state: null,
+                    archive_state_at: null,
+                  })
+                  .where(
+                    inArray(
+                      SessionTable.id,
+                      restore.map((row) => row.id as SessionID),
+                    ),
+                  )
+                  .run()
+                  .pipe(Effect.orDie)
+
+                const restored = new Set(restore.map((row) => row.id))
+                yield* publishRows(
+                  tx,
+                  rows
+                    .filter((row) => restored.has(row.id))
+                    .map((row) => ({
+                      row: {
+                        ...row,
+                        time_archived: null,
+                        family_archive_id: null,
+                        archive_cause: null,
+                        archive_state: null,
+                        archive_state_at: null,
+                      } as SessionRow,
+                      override: {
+                        archived: null,
+                        familyArchiveID: null,
+                        archiveCause: null,
+                        archiveState: null,
+                        archiveStateAt: null,
+                      } satisfies ArchiveOverride,
+                    })),
+                )
+                for (const row of rows) {
+                  if (restored.has(row.id)) row.time_archived = null
+                }
+              }
+
+              const stillArchived = rows.filter((row) => row.time_archived !== null).map((row) => row.id as SessionID)
+              return {
+                root_id: root.id,
+                restored_ids: restore.map((row) => row.id as SessionID),
+                still_archived_ids: stillArchived,
+              }
+            }),
+          { behavior: "immediate" },
+        ),
+      )
     })
 
     const setMetadata = Effect.fn("Session.setMetadata")(function* (input: typeof SetMetadataInput.Type) {
@@ -929,6 +1598,9 @@ const layer: Layer.Layer<
       get,
       setTitle,
       setArchived,
+      archivePreview,
+      archiveSubtree,
+      unarchiveSubtree,
       setMetadata,
       setAgentModel,
       setPermission,
@@ -1027,7 +1699,7 @@ function listByProject(
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [BackgroundJob.node, RuntimeFlags.node, Database.node, EventV2Bridge.node],
+  deps: [BackgroundJob.node, RuntimeFlags.node, Database.node, EventV2Bridge.node, SessionStatus.node],
 })
 
 export * as Session from "./session"
