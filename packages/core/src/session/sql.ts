@@ -214,32 +214,41 @@ export const SessionContextEpochTable = sqliteTable("session_context_epoch", {
  * gate, and the browser aggregate. Do not re-derive this rule in a caller and do
  * not replace it with `coalesce(family_archive_id, id)`.
  *
- * Yields one row per session with `session_id` and `family_key`:
+ * Yields exactly one row per session with `session_id` and `family_key`:
  *
  * - a non-null `family_archive_id` whose root row exists wins;
- * - a `user`-cause row is its own family;
+ * - an archived row whose family root is missing is its own family;
+ * - a `user`-cause row with no existing family root is its own family;
  * - otherwise the row inherits its nearest archived ancestor's effective key
  *   (recursively, through legacy null/null ancestors);
  * - otherwise it falls back to its own ID.
+ *
+ * The ancestor walk keeps a path guard so a parent cycle terminates instead of
+ * recursing forever.
  *
  * The TypeScript twin is `effectiveFamilyKey` in `schema.ts`; keep them in sync.
  */
 export const effectiveFamilyKeySql = sql`
   WITH RECURSIVE
-    session_ancestor(id, ancestor_id, depth) AS (
-      SELECT id, parent_id, 1
+    session_ancestor(id, ancestor_id, depth, path) AS (
+      SELECT id, parent_id, 1, ',' || parent_id || ','
       FROM session
       WHERE parent_id IS NOT NULL
-      UNION
-      SELECT session_ancestor.id, session.parent_id, session_ancestor.depth + 1
+      UNION ALL
+      SELECT session_ancestor.id,
+             session.parent_id,
+             session_ancestor.depth + 1,
+             session_ancestor.path || session.parent_id || ','
       FROM session_ancestor
       JOIN session ON session.id = session_ancestor.ancestor_id
       WHERE session.parent_id IS NOT NULL
+        AND instr(session_ancestor.path, ',' || session.parent_id || ',') = 0
     ),
     family_candidate(id, family_key, priority) AS (
       SELECT session.id,
              CASE
                WHEN family_root.id IS NOT NULL THEN session.family_archive_id
+               WHEN session.family_archive_id IS NOT NULL AND session.time_archived IS NOT NULL THEN session.id
                WHEN session.archive_cause = 'user' THEN session.id
              END,
              0
@@ -249,6 +258,7 @@ export const effectiveFamilyKeySql = sql`
       SELECT session_ancestor.id,
              CASE
                WHEN family_root.id IS NOT NULL THEN session.family_archive_id
+               WHEN session.family_archive_id IS NOT NULL AND session.time_archived IS NOT NULL THEN session.id
                WHEN session.archive_cause = 'user' THEN session.id
              END,
              session_ancestor.depth

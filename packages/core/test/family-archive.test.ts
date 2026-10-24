@@ -366,26 +366,42 @@ describe("family archive projector", () => {
 })
 
 describe("effective family key", () => {
-  test("handles cascade, flag-off standalone, legacy, existing root, and missing root", () => {
+  test("handles cascade, user, legacy, nested legacy, and missing roots", () => {
     const exists = (id: string) => id === "p"
+    const ancestor = { id: "c", time_archived: 1, effective_key: "p" }
     expect(
       effectiveFamilyKey({ id: "c", family_archive_id: "p", archive_cause: "cascade" }, { familyExists: exists }),
     ).toBe("p")
     expect(
-      effectiveFamilyKey({ id: "c", family_archive_id: null, archive_cause: "user" }, { familyExists: exists }),
-    ).toBe("c")
+      effectiveFamilyKey({ id: "u", family_archive_id: null, archive_cause: "user", time_archived: 1 }, { familyExists: exists }),
+    ).toBe("u")
     expect(
       effectiveFamilyKey(
-        { id: "c", family_archive_id: null, archive_cause: null },
-        { familyExists: exists, nearestArchivedAncestor: { id: "p", time_archived: 1, parent_id: null } },
+        { id: "g", family_archive_id: null, archive_cause: null },
+        { familyExists: exists, nearestArchivedAncestor: ancestor },
       ),
     ).toBe("p")
     expect(
-      effectiveFamilyKey({ id: "c", family_archive_id: "missing", archive_cause: "cascade" }, { familyExists: exists }),
-    ).toBe("c")
+      effectiveFamilyKey(
+        { id: "x", family_archive_id: "missing", archive_cause: "cascade", time_archived: 1 },
+        { familyExists: exists, nearestArchivedAncestor: { id: "p", time_archived: 1, effective_key: "p" } },
+      ),
+    ).toBe("x")
+    expect(
+      effectiveFamilyKey(
+        { id: "y", family_archive_id: "missing", archive_cause: "cascade", time_archived: null },
+        { familyExists: exists, nearestArchivedAncestor: { id: "p", time_archived: 1, effective_key: "p" } },
+      ),
+    ).toBe("p")
+    expect(
+      effectiveFamilyKey(
+        { id: "o", family_archive_id: "missing", archive_cause: "cascade", time_archived: 1 },
+        { familyExists: exists },
+      ),
+    ).toBe("o")
   })
 
-  it.effect("SQL and TypeScript agree on cascade, flag-off standalone, legacy, existing root, and missing root", () =>
+  it.effect("SQL matches TypeScript for cascade, user, legacy, nested legacy, and missing roots", () =>
     Effect.gen(function* () {
       const db = yield* seedProject
       const row = (id: string, values: Partial<typeof SessionTable.$inferInsert> = {}) => ({
@@ -405,6 +421,9 @@ describe("effective family key", () => {
       const L = SessionSchema.ID.make("ses_l")
       const U = SessionSchema.ID.make("ses_u")
       const O = SessionSchema.ID.make("ses_o")
+      const X = SessionSchema.ID.make("ses_x")
+      const Y = SessionSchema.ID.make("ses_y")
+      const missing = SessionSchema.ID.make("ses_missing")
 
       yield* db
         .insert(SessionTable)
@@ -413,7 +432,67 @@ describe("effective family key", () => {
           row(C, { parent_id: P, family_archive_id: P, archive_cause: "cascade" }),
           row(L, { parent_id: P }),
           row(U, { parent_id: P, archive_cause: "user" }),
-          row(O, { family_archive_id: SessionSchema.ID.make("ses_missing"), archive_cause: "cascade" }),
+          row(O, { family_archive_id: missing, archive_cause: "cascade" }),
+          row(X, { parent_id: P, family_archive_id: missing, archive_cause: "cascade" }),
+          row(Y, { parent_id: P, family_archive_id: missing, archive_cause: "cascade", time_archived: null }),
+        ])
+        .run()
+
+      const rows = yield* db.all<{ session_id: string; family_key: string }>(effectiveFamilyKeySql)
+      expect(rows).toHaveLength(7)
+      const actual = new Map(rows.map((entry) => [entry.session_id, entry.family_key]))
+      expect(actual).toEqual(
+        new Map([
+          [P, P],
+          [C, P],
+          [L, P],
+          [U, U],
+          [O, O],
+          [X, X],
+          [Y, P],
+        ]),
+      )
+
+      const exists = (id: string) => id === P
+      const ancestor = (id: string) => ({ id, time_archived: 1, effective_key: P })
+      const expected = new Map([
+        [P, effectiveFamilyKey({ id: P, family_archive_id: P, archive_cause: "user", time_archived: 1 }, { familyExists: exists })],
+        [C, effectiveFamilyKey({ id: C, family_archive_id: P, archive_cause: "cascade", time_archived: 1 }, { familyExists: exists, nearestArchivedAncestor: ancestor(P) })],
+        [L, effectiveFamilyKey({ id: L, family_archive_id: null, archive_cause: null, time_archived: 1 }, { familyExists: exists, nearestArchivedAncestor: ancestor(P) })],
+        [U, effectiveFamilyKey({ id: U, family_archive_id: null, archive_cause: "user", time_archived: 1 }, { familyExists: exists, nearestArchivedAncestor: ancestor(P) })],
+        [O, effectiveFamilyKey({ id: O, family_archive_id: missing, archive_cause: "cascade", time_archived: 1 }, { familyExists: exists })],
+        [X, effectiveFamilyKey({ id: X, family_archive_id: missing, archive_cause: "cascade", time_archived: 1 }, { familyExists: exists, nearestArchivedAncestor: ancestor(P) })],
+        [Y, effectiveFamilyKey({ id: Y, family_archive_id: missing, archive_cause: "cascade", time_archived: null }, { familyExists: exists, nearestArchivedAncestor: ancestor(P) })],
+      ])
+      expect(actual).toEqual(expected)
+    }),
+  )
+
+  it.effect("SQL resolves a nested legacy chain recursively", () =>
+    Effect.gen(function* () {
+      const db = yield* seedProject
+      const row = (id: string, values: Partial<typeof SessionTable.$inferInsert> = {}) => ({
+        id: SessionSchema.ID.make(id),
+        project_id: projectID,
+        slug: id,
+        directory: "/project",
+        title: id,
+        version: "test",
+        time_created: 1,
+        time_updated: 1,
+        time_archived: 1,
+        ...values,
+      })
+      const P = SessionSchema.ID.make("ses_p")
+      const L = SessionSchema.ID.make("ses_l")
+      const G = SessionSchema.ID.make("ses_g")
+
+      yield* db
+        .insert(SessionTable)
+        .values([
+          row(P, { family_archive_id: P, archive_cause: "user" }),
+          row(L, { parent_id: P }),
+          row(G, { parent_id: L }),
         ])
         .run()
 
@@ -421,10 +500,42 @@ describe("effective family key", () => {
       expect(new Map(rows.map((entry) => [entry.session_id, entry.family_key]))).toEqual(
         new Map([
           [P, P],
-          [C, P],
           [L, P],
-          [U, U],
-          [O, O],
+          [G, P],
+        ]),
+      )
+    }),
+  )
+
+  it.effect("SQL terminates on a parent cycle", () =>
+    Effect.gen(function* () {
+      const db = yield* seedProject
+      const row = (id: string, values: Partial<typeof SessionTable.$inferInsert> = {}) => ({
+        id: SessionSchema.ID.make(id),
+        project_id: projectID,
+        slug: id,
+        directory: "/project",
+        title: id,
+        version: "test",
+        time_created: 1,
+        time_updated: 1,
+        time_archived: null,
+        ...values,
+      })
+      const A = SessionSchema.ID.make("ses_a")
+      const B = SessionSchema.ID.make("ses_b")
+
+      yield* db
+        .insert(SessionTable)
+        .values([row(A, { parent_id: B }), row(B, { parent_id: A })])
+        .run()
+
+      const rows = yield* db.all<{ session_id: string; family_key: string }>(effectiveFamilyKeySql)
+      expect(rows).toHaveLength(2)
+      expect(new Map(rows.map((entry) => [entry.session_id, entry.family_key]))).toEqual(
+        new Map([
+          [A, A],
+          [B, B],
         ]),
       )
     }),

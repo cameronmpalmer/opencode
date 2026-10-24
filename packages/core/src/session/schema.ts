@@ -11,21 +11,39 @@ export type Info = Session.Info
 /**
  * The effective family key for a session row (design 6.1).
  *
- * A row belongs to the family named by `family_archive_id` when that root
- * still exists, is its own standalone family when it was archived with cause
- * `user`, otherwise inherits its nearest archived ancestor's key, and finally
- * falls back to its own ID. The SQL definition in `sql.ts`
- * (`effectiveFamilyKeySql`) must stay in sync with this function.
+ * - A non-null `family_archive_id` whose root still exists wins.
+ * - An archived row whose family root is missing is its own family.
+ * - A `user`-cause row with no existing family root is its own family.
+ * - Otherwise the row inherits its nearest archived ancestor's recursive
+ *   effective key, and falls back to its own ID when it has none.
+ *
+ * `nearestArchivedAncestor.effective_key` is that ancestor's already-resolved
+ * key, so a legacy chain resolves to the same key as the SQL definition in
+ * `sql.ts` (`effectiveFamilyKeySql`). Keep the two in sync.
  */
 export function effectiveFamilyKey(
-  row: { id: string; family_archive_id?: string | null; archive_cause?: string | null },
-  options?: {
-    nearestArchivedAncestor?: { id: string; time_archived?: number | null; parent_id?: string | null } | null
-    familyExists?: (id: string) => boolean
+  row: {
+    id: string
+    family_archive_id?: string | null
+    archive_cause?: string | null
+    time_archived?: number | null
+  },
+  options: {
+    familyExists: (id: string) => boolean
+    nearestArchivedAncestor?: {
+      id: string
+      time_archived?: number | null
+      effective_key?: string
+    } | null
   },
 ): string {
-  if (row.family_archive_id && (options?.familyExists?.(row.family_archive_id) ?? true)) return row.family_archive_id
+  if (row.family_archive_id) {
+    if (options.familyExists(row.family_archive_id)) return row.family_archive_id
+    if (row.time_archived != null) return row.id
+  }
   if (row.archive_cause === "user") return row.id
-  if (options?.nearestArchivedAncestor?.time_archived) return options.nearestArchivedAncestor.id
+  if (options.nearestArchivedAncestor?.time_archived != null) {
+    return options.nearestArchivedAncestor.effective_key ?? options.nearestArchivedAncestor.id
+  }
   return row.id
 }
