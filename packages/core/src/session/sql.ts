@@ -281,7 +281,9 @@ export const effectiveFamilyKeySql = sql`
       SELECT id, ancestor_id
       FROM (
         SELECT session_ancestor.id, session_ancestor.ancestor_id,
-               ROW_NUMBER() OVER (PARTITION BY session_ancestor.id ORDER BY session_ancestor.depth DESC) AS rank
+               ROW_NUMBER() OVER (PARTITION BY session_ancestor.id
+                                  -- The outermost archived ancestor is the terminal key for a legacy chain with no base.
+                                  ORDER BY session_ancestor.depth DESC) AS rank
         FROM session_ancestor
         JOIN session ON session.id = session_ancestor.ancestor_id
         WHERE session.time_archived IS NOT NULL
