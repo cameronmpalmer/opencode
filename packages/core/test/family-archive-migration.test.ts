@@ -117,6 +117,19 @@ describe("family archive migrations", () => {
         const db = yield* makeDb
         yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY)`)
         expect((yield* tableInfo(db, "session")).map((column) => column.name)).toEqual(["id"])
+        // The hand-written trigger migration references these tables, so the
+        // partial-upgrade fixture must provide them.
+        for (const table of [
+          "message",
+          "part",
+          "session_input",
+          "session_message",
+          "todo",
+          "session_context_epoch",
+          "session_share",
+        ]) {
+          yield* db.run(sql`CREATE TABLE ${sql.identifier(table)} (id text, session_id text, message_id text)`)
+        }
 
         yield* DatabaseMigration.applyOnly(db, [familyArchiveMigration, familyArchiveBackfillMigration])
 

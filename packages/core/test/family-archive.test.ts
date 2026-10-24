@@ -11,8 +11,16 @@ import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionSchema, effectiveFamilyKey } from "@opencode-ai/core/session/schema"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { SessionArchivedError } from "@opencode-ai/core/session/error"
 import { SessionMessage } from "@opencode-ai/core/session/message"
-import { SessionArchiveGuardTable, SessionTable, effectiveFamilyKeySql } from "@opencode-ai/core/session/sql"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import {
+  SessionArchiveGuardTable,
+  SessionImportExemptTable,
+  SessionTable,
+  effectiveFamilyKeySql,
+} from "@opencode-ai/core/session/sql"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { testEffect } from "./lib/effect"
@@ -363,9 +371,108 @@ describe("family archive projector", () => {
       expect(row?.time_archived).toBe(1000)
     }),
   )
+
+  it.effect("projects a full session.updated projection of an archived row when guarded", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow({
+        time_archived: 1000,
+        family_archive_id: sessionID,
+        archive_cause: "cascade",
+      })
+      yield* db.insert(SessionArchiveGuardTable).values({ session_id: sessionID }).run()
+
+      yield* projectUpdated({
+        familyArchiveID: sessionID,
+        archiveCause: "cascade",
+        archiveState: null,
+        archiveStateAt: null,
+        time: { created: 1, updated: 2, archived: 1000 },
+      })
+
+      const row = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get()
+      expect(row?.time_archived).toBe(1000)
+      expect(row?.family_archive_id).toBe(sessionID)
+      expect(row?.archive_cause).toBe("cascade")
+      expect(row?.time_updated).toBe(2)
+    }),
+  )
+
+  it.effect("rejects session.created under an archived ancestor without journaling the event", () =>
+    Effect.gen(function* () {
+      const db = yield* seedProject
+      const root = SessionSchema.ID.make("ses_root")
+      const child = SessionSchema.ID.make("ses_child")
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: root,
+          project_id: projectID,
+          slug: "root",
+          directory: "/project",
+          title: "root",
+          version: "test",
+          time_created: 1,
+          time_updated: 1,
+          time_archived: 1000,
+          family_archive_id: root,
+          archive_cause: "user",
+        })
+        .run()
+      const events = yield* EventV2.Service
+
+      const exit = yield* events
+        .publish(SessionV1.Event.Created, { sessionID: child, info: info({ id: child, parentID: root }) })
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      expect(exit.cause.reasons.find(Cause.isDieReason)?.defect).toBeInstanceOf(SessionArchivedError)
+      expect(yield* db.select().from(SessionTable).where(eq(SessionTable.id, child)).get()).toBeUndefined()
+      expect(yield* db.select().from(EventTable).all()).toHaveLength(0)
+      expect(yield* db.select().from(EventSequenceTable).all()).toHaveLength(0)
+    }),
+  )
+
+  it.effect("rejects message.updated for an archived session without journaling the event", () =>
+    Effect.gen(function* () {
+      const db = yield* seedArchivedRow({ time_archived: 1000 })
+      const events = yield* EventV2.Service
+
+      const exit = yield* events
+        .publish(SessionV1.Event.MessageUpdated, {
+          sessionID,
+          info: {
+            id: SessionV1.MessageID.make("msg_blocked"),
+            sessionID,
+            role: "user",
+            time: { created: 1 },
+            agent: "build",
+            model: {
+              providerID: ProviderV2.ID.make("provider"),
+              modelID: ModelV2.ID.make("model"),
+            },
+          },
+        })
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+      expect(exit.cause.reasons.find(Cause.isDieReason)?.defect).toBeInstanceOf(SessionArchivedError)
+      expect(yield* db.select().from(EventTable).all()).toHaveLength(0)
+      expect(yield* db.select().from(EventSequenceTable).all()).toHaveLength(0)
+    }),
+  )
 })
 
 describe("effective family key", () => {
+  // Legacy family fixtures predate the trigger and are inserted as an import,
+  // which is the supported way to restore rows under an archived ancestor.
+  const allowFixtureInsert = (db: Database.Interface["db"], ids: SessionSchema.ID[]) =>
+    db
+      .insert(SessionImportExemptTable)
+      .values(ids.map((session_id) => ({ session_id, expires_at: Date.now() + 60_000 })))
+      .run()
+
   const row = (id: string, values: Partial<typeof SessionTable.$inferInsert> = {}) => ({
     id: SessionSchema.ID.make(id),
     project_id: projectID,
@@ -427,6 +534,7 @@ describe("effective family key", () => {
       const X = SessionSchema.ID.make("ses_x")
       const Y = SessionSchema.ID.make("ses_y")
       const missing = SessionSchema.ID.make("ses_missing")
+      yield* allowFixtureInsert(db, [C, L, U, X, Y])
 
       yield* db
         .insert(SessionTable)
@@ -518,6 +626,7 @@ describe("effective family key", () => {
       const P = SessionSchema.ID.make("ses_p")
       const L = SessionSchema.ID.make("ses_l")
       const G = SessionSchema.ID.make("ses_g")
+      yield* allowFixtureInsert(db, [L, G])
 
       yield* db
         .insert(SessionTable)
@@ -546,6 +655,7 @@ describe("effective family key", () => {
       const P = SessionSchema.ID.make("ses_p")
       const L = SessionSchema.ID.make("ses_l")
       const G = SessionSchema.ID.make("ses_g")
+      yield* allowFixtureInsert(db, [L, G])
 
       yield* db
         .insert(SessionTable)

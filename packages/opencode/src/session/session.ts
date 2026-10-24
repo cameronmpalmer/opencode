@@ -13,6 +13,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionV2 } from "@opencode-ai/core/session"
 import * as SessionExecutionLocal from "@opencode-ai/core/session/execution/local"
 import { LIVE_LEASE_MS } from "@opencode-ai/core/session/execution/run-lease"
+import { SessionArchivedError } from "@opencode-ai/core/session/error"
 import { locationServiceMapLayer } from "@opencode-ai/core/location-services"
 
 import { NotFoundError } from "@/storage/storage"
@@ -647,6 +648,36 @@ const layer: Layer.Layer<
         },
       }
       yield* Effect.logInfo("created", result)
+
+      if (result.parentID) {
+        // Cheap fail-fast check. The database trigger remains the correctness boundary.
+        const blocked = yield* db
+          .all<{ id: string }>(
+            sql`
+            WITH RECURSIVE ancestors(id, parent_id, time_archived, archive_state) AS (
+              SELECT s.id, s.parent_id, s.time_archived, s.archive_state
+              FROM session s
+              WHERE s.id = ${result.parentID}
+              UNION
+              SELECT p.id, p.parent_id, p.time_archived, p.archive_state
+              FROM session p
+              JOIN ancestors a ON p.id = a.parent_id
+            )
+            SELECT id FROM ancestors
+            WHERE time_archived IS NOT NULL OR archive_state = 'archiving'
+            LIMIT 1
+          `,
+          )
+          .pipe(Effect.orDie)
+        if (blocked.length > 0) {
+          return yield* Effect.die(
+            new SessionArchivedError({
+              sessionID: result.id,
+              message: `Cannot create session ${result.id} under archived session ${blocked[0]!.id}`,
+            }),
+          )
+        }
+      }
 
       yield* events.publish(SessionV1.Event.Created, { sessionID: result.id, info: result })
 

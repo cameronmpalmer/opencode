@@ -11,6 +11,7 @@ import { WorkspaceTable } from "../control-plane/workspace.sql"
 import { SessionMessage } from "./message"
 import { SessionMessageUpdater } from "./message-updater"
 import { SessionInput } from "./input"
+import { SessionArchivedError } from "./error"
 import { WorkspaceV2 } from "../workspace"
 import {
   MessageTable,
@@ -144,6 +145,50 @@ function presentedArchiveFields(set: Partial<typeof SessionTable.$inferInsert>) 
   return archiveFields.filter((field) => set[field] !== undefined)
 }
 
+type SessionID = (typeof SessionTable.$inferSelect)["id"]
+
+function assertSessionWritable(db: DatabaseService, sessionID: SessionID) {
+  return Effect.gen(function* () {
+    const row = yield* db
+      .select({
+        time_archived: SessionTable.time_archived,
+        archive_state: SessionTable.archive_state,
+      })
+      .from(SessionTable)
+      .where(eq(SessionTable.id, sessionID))
+      .get()
+      .pipe(Effect.orDie)
+    if (!row || (row.time_archived === null && row.archive_state !== "archiving")) return
+    return yield* Effect.die(
+      new SessionArchivedError({
+        sessionID,
+        message: `Session ${sessionID} is archived and rejects writes`,
+      }),
+    )
+  })
+}
+
+function archivedAncestor(db: DatabaseService, parentID: SessionID) {
+  return db
+    .all<{ id: string }>(
+      sql`
+      WITH RECURSIVE ancestors(id, parent_id, time_archived, archive_state) AS (
+        SELECT s.id, s.parent_id, s.time_archived, s.archive_state
+        FROM session s
+        WHERE s.id = ${parentID}
+        UNION
+        SELECT p.id, p.parent_id, p.time_archived, p.archive_state
+        FROM session p
+        JOIN ancestors a ON p.id = a.parent_id
+      )
+      SELECT id FROM ancestors
+      WHERE time_archived IS NOT NULL OR archive_state = 'archiving'
+      LIMIT 1
+    `,
+    )
+    .pipe(Effect.orDie)
+}
+
 function messageData(
   info: (typeof SessionV1.Event.MessageUpdated.Type)["data"]["info"],
 ): typeof MessageTable.$inferInsert.data {
@@ -180,6 +225,7 @@ function applyUsage(
 
 function run(db: DatabaseService, event: SessionEvent.Event) {
   return Effect.gen(function* () {
+    yield* assertSessionWritable(db, event.data.sessionID)
     const decodeRow = (row: typeof SessionMessageTable.$inferSelect) =>
       decodeMessage({ ...row.data, id: row.id, type: row.type })
     const updateMessage = (message: SessionMessage.Message) => {
@@ -283,6 +329,18 @@ const layer = Layer.effectDiscard(
     const { db } = yield* Database.Service
     yield* events.project(SessionV1.Event.Created, (event) =>
       Effect.gen(function* () {
+        const parentID = event.data.info.parentID
+        if (parentID) {
+          const blocked = yield* archivedAncestor(db, parentID)
+          if (blocked.length > 0) {
+            return yield* Effect.die(
+              new SessionArchivedError({
+                sessionID: event.data.info.id,
+                message: `Cannot create session ${event.data.info.id} under archived session ${blocked[0]!.id}`,
+              }),
+            )
+          }
+        }
         const stored = yield* db
           .insert(SessionTable)
           .values(sessionRow(event.data.info))
@@ -345,6 +403,7 @@ const layer = Layer.effectDiscard(
     )
     yield* events.project(SessionEvent.Moved, (event) =>
       Effect.gen(function* () {
+        yield* assertSessionWritable(db, event.data.sessionID)
         yield* db
           .update(SessionTable)
           .set({
@@ -363,6 +422,7 @@ const layer = Layer.effectDiscard(
     )
     yield* events.project(SessionV1.Event.MessageUpdated, (event) =>
       Effect.gen(function* () {
+        yield* assertSessionWritable(db, event.data.info.sessionID)
         const time_created = event.data.info.time.created
         const id = event.data.info.id
         const sessionID = event.data.info.sessionID
@@ -377,6 +437,7 @@ const layer = Layer.effectDiscard(
     )
     yield* events.project(SessionV1.Event.MessageRemoved, (event) =>
       Effect.gen(function* () {
+        yield* assertSessionWritable(db, event.data.sessionID)
         const rows = yield* db
           .select()
           .from(PartTable)
@@ -396,6 +457,7 @@ const layer = Layer.effectDiscard(
     )
     yield* events.project(SessionV1.Event.PartRemoved, (event) =>
       Effect.gen(function* () {
+        yield* assertSessionWritable(db, event.data.sessionID)
         const row = yield* db
           .select()
           .from(PartTable)
@@ -413,6 +475,15 @@ const layer = Layer.effectDiscard(
     )
     yield* events.project(SessionV1.Event.PartUpdated, (event) =>
       Effect.gen(function* () {
+        // Resolve the session through the message row, matching the database
+        // trigger, so a mismatched part.session_id cannot bypass the check.
+        const owner = yield* db
+          .select({ session_id: MessageTable.session_id })
+          .from(MessageTable)
+          .where(eq(MessageTable.id, event.data.part.messageID))
+          .get()
+          .pipe(Effect.orDie)
+        yield* assertSessionWritable(db, owner?.session_id ?? event.data.part.sessionID)
         const id = event.data.part.id
         const messageID = event.data.part.messageID
         const sessionID = event.data.part.sessionID
@@ -431,15 +502,20 @@ const layer = Layer.effectDiscard(
       }),
     )
     yield* events.project(SessionEvent.AgentSwitched, (event) =>
-      db
-        .update(SessionTable)
-        .set({ agent: event.data.agent, time_updated: DateTime.toEpochMillis(event.data.timestamp) })
-        .where(eq(SessionTable.id, event.data.sessionID))
-        .run()
-        .pipe(Effect.orDie, Effect.andThen(run(db, event))),
+      Effect.gen(function* () {
+        yield* assertSessionWritable(db, event.data.sessionID)
+        yield* db
+          .update(SessionTable)
+          .set({ agent: event.data.agent, time_updated: DateTime.toEpochMillis(event.data.timestamp) })
+          .where(eq(SessionTable.id, event.data.sessionID))
+          .run()
+          .pipe(Effect.orDie)
+        yield* run(db, event)
+      }),
     )
     yield* events.project(SessionEvent.ModelSwitched, (event) =>
       Effect.gen(function* () {
+        yield* assertSessionWritable(db, event.data.sessionID)
         yield* db
           .update(SessionTable)
           .set({ model: event.data.model, time_updated: DateTime.toEpochMillis(event.data.timestamp) })
@@ -452,6 +528,7 @@ const layer = Layer.effectDiscard(
     yield* events.project(SessionEvent.Prompted, (event) =>
       Effect.gen(function* () {
         if (event.durable === undefined) return yield* Effect.die("Durable Session event is missing aggregate sequence")
+        yield* assertSessionWritable(db, event.data.sessionID)
         yield* SessionInput.projectPrompted(db, {
           id: event.data.messageID,
           sessionID: event.data.sessionID,
@@ -466,6 +543,7 @@ const layer = Layer.effectDiscard(
     yield* events.project(SessionEvent.PromptAdmitted, (event) =>
       Effect.gen(function* () {
         if (event.durable === undefined) return yield* Effect.die("Durable Session event is missing aggregate sequence")
+        yield* assertSessionWritable(db, event.data.sessionID)
         yield* SessionInput.projectAdmitted(db, {
           admittedSeq: event.durable.seq,
           id: event.data.messageID,
@@ -496,26 +574,33 @@ const layer = Layer.effectDiscard(
     // yield* events.project(SessionEvent.Retried, (event) => run(db, event))
     yield* events.project(SessionEvent.Compaction.Ended, (event) => run(db, event))
     yield* events.project(SessionEvent.RevertEvent.Staged, (event) =>
-      db
-        .update(SessionTable)
-        .set({
-          revert: { ...event.data.revert, files: event.data.revert.files ? [...event.data.revert.files] : undefined },
-          time_updated: DateTime.toEpochMillis(event.data.timestamp),
-        })
-        .where(eq(SessionTable.id, event.data.sessionID))
-        .run()
-        .pipe(Effect.orDie, Effect.asVoid),
+      Effect.gen(function* () {
+        yield* assertSessionWritable(db, event.data.sessionID)
+        yield* db
+          .update(SessionTable)
+          .set({
+            revert: { ...event.data.revert, files: event.data.revert.files ? [...event.data.revert.files] : undefined },
+            time_updated: DateTime.toEpochMillis(event.data.timestamp),
+          })
+          .where(eq(SessionTable.id, event.data.sessionID))
+          .run()
+          .pipe(Effect.orDie)
+      }),
     )
     yield* events.project(SessionEvent.RevertEvent.Cleared, (event) =>
-      db
-        .update(SessionTable)
-        .set({ revert: null, time_updated: DateTime.toEpochMillis(event.data.timestamp) })
-        .where(eq(SessionTable.id, event.data.sessionID))
-        .run()
-        .pipe(Effect.orDie, Effect.asVoid),
+      Effect.gen(function* () {
+        yield* assertSessionWritable(db, event.data.sessionID)
+        yield* db
+          .update(SessionTable)
+          .set({ revert: null, time_updated: DateTime.toEpochMillis(event.data.timestamp) })
+          .where(eq(SessionTable.id, event.data.sessionID))
+          .run()
+          .pipe(Effect.orDie)
+      }),
     )
     yield* events.project(SessionEvent.RevertEvent.Committed, (event) =>
       Effect.gen(function* () {
+        yield* assertSessionWritable(db, event.data.sessionID)
         const boundary = yield* db
           .select({ seq: SessionMessageTable.seq })
           .from(SessionMessageTable)
