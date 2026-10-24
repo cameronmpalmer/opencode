@@ -1,4 +1,5 @@
 import { sqliteTable, text, integer, index, primaryKey, real, uniqueIndex } from "drizzle-orm/sqlite-core"
+import { sql } from "drizzle-orm"
 import * as DatabasePath from "../database/path"
 import { ProjectTable } from "../project/sql"
 import type { SessionMessage } from "./message"
@@ -206,3 +207,80 @@ export const SessionContextEpochTable = sqliteTable("session_context_epoch", {
   snapshot: text({ mode: "json" }).notNull().$type<SystemContext.Snapshot>(),
   baseline_seq: integer().notNull(),
 })
+
+/**
+ * The SQL definition of the effective family key (design 6.1), shared by every
+ * query that groups or gates sessions by family: `familyMemberCount`, the purge
+ * gate, and the browser aggregate. Do not re-derive this rule in a caller and do
+ * not replace it with `coalesce(family_archive_id, id)`.
+ *
+ * Yields one row per session with `session_id` and `family_key`:
+ *
+ * - a non-null `family_archive_id` whose root row exists wins;
+ * - a `user`-cause row is its own family;
+ * - otherwise the row inherits its nearest archived ancestor's effective key
+ *   (recursively, through legacy null/null ancestors);
+ * - otherwise it falls back to its own ID.
+ *
+ * The TypeScript twin is `effectiveFamilyKey` in `schema.ts`; keep them in sync.
+ */
+export const effectiveFamilyKeySql = sql`
+  WITH RECURSIVE
+    session_ancestor(id, ancestor_id, depth) AS (
+      SELECT id, parent_id, 1
+      FROM session
+      WHERE parent_id IS NOT NULL
+      UNION
+      SELECT session_ancestor.id, session.parent_id, session_ancestor.depth + 1
+      FROM session_ancestor
+      JOIN session ON session.id = session_ancestor.ancestor_id
+      WHERE session.parent_id IS NOT NULL
+    ),
+    family_candidate(id, family_key, priority) AS (
+      SELECT session.id,
+             CASE
+               WHEN family_root.id IS NOT NULL THEN session.family_archive_id
+               WHEN session.archive_cause = 'user' THEN session.id
+             END,
+             0
+      FROM session
+      LEFT JOIN session AS family_root ON family_root.id = session.family_archive_id
+      UNION ALL
+      SELECT session_ancestor.id,
+             CASE
+               WHEN family_root.id IS NOT NULL THEN session.family_archive_id
+               WHEN session.archive_cause = 'user' THEN session.id
+             END,
+             session_ancestor.depth
+      FROM session_ancestor
+      JOIN session ON session.id = session_ancestor.ancestor_id
+      LEFT JOIN session AS family_root ON family_root.id = session.family_archive_id
+      WHERE session.time_archived IS NOT NULL
+    ),
+    resolved_candidate AS (
+      SELECT id, family_key
+      FROM (
+        SELECT id, family_key,
+               ROW_NUMBER() OVER (PARTITION BY id ORDER BY priority) AS rank
+        FROM family_candidate
+        WHERE family_key IS NOT NULL
+      )
+      WHERE rank = 1
+    ),
+    fallback_ancestor AS (
+      SELECT id, ancestor_id
+      FROM (
+        SELECT session_ancestor.id, session_ancestor.ancestor_id,
+               ROW_NUMBER() OVER (PARTITION BY session_ancestor.id ORDER BY session_ancestor.depth DESC) AS rank
+        FROM session_ancestor
+        JOIN session ON session.id = session_ancestor.ancestor_id
+        WHERE session.time_archived IS NOT NULL
+      )
+      WHERE rank = 1
+    )
+  SELECT session.id AS session_id,
+         COALESCE(resolved_candidate.family_key, fallback_ancestor.ancestor_id, session.id) AS family_key
+  FROM session
+  LEFT JOIN resolved_candidate ON resolved_candidate.id = session.id
+  LEFT JOIN fallback_ancestor ON fallback_ancestor.id = session.id
+`

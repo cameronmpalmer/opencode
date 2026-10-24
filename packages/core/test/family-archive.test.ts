@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Cause, Effect, Exit } from "effect"
 import { eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
@@ -9,10 +9,10 @@ import { EventSequenceTable, EventTable } from "@opencode-ai/core/event/sql"
 import { Project } from "@opencode-ai/core/project"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
-import { SessionSchema } from "@opencode-ai/core/session/schema"
+import { SessionSchema, effectiveFamilyKey } from "@opencode-ai/core/session/schema"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionMessage } from "@opencode-ai/core/session/message"
-import { SessionArchiveGuardTable, SessionTable } from "@opencode-ai/core/session/sql"
+import { SessionArchiveGuardTable, SessionTable, effectiveFamilyKeySql } from "@opencode-ai/core/session/sql"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { WorkspaceV2 } from "@opencode-ai/core/workspace"
 import { testEffect } from "./lib/effect"
@@ -361,6 +361,72 @@ describe("family archive projector", () => {
       expect(row?.archive_state).toBe("archiving")
       expect(row?.archive_state_at).toBe(2000)
       expect(row?.time_archived).toBe(1000)
+    }),
+  )
+})
+
+describe("effective family key", () => {
+  test("handles cascade, flag-off standalone, legacy, existing root, and missing root", () => {
+    const exists = (id: string) => id === "p"
+    expect(
+      effectiveFamilyKey({ id: "c", family_archive_id: "p", archive_cause: "cascade" }, { familyExists: exists }),
+    ).toBe("p")
+    expect(
+      effectiveFamilyKey({ id: "c", family_archive_id: null, archive_cause: "user" }, { familyExists: exists }),
+    ).toBe("c")
+    expect(
+      effectiveFamilyKey(
+        { id: "c", family_archive_id: null, archive_cause: null },
+        { familyExists: exists, nearestArchivedAncestor: { id: "p", time_archived: 1, parent_id: null } },
+      ),
+    ).toBe("p")
+    expect(
+      effectiveFamilyKey({ id: "c", family_archive_id: "missing", archive_cause: "cascade" }, { familyExists: exists }),
+    ).toBe("c")
+  })
+
+  it.effect("SQL and TypeScript agree on cascade, flag-off standalone, legacy, existing root, and missing root", () =>
+    Effect.gen(function* () {
+      const db = yield* seedProject
+      const row = (id: string, values: Partial<typeof SessionTable.$inferInsert> = {}) => ({
+        id: SessionSchema.ID.make(id),
+        project_id: projectID,
+        slug: id,
+        directory: "/project",
+        title: id,
+        version: "test",
+        time_created: 1,
+        time_updated: 1,
+        time_archived: 1,
+        ...values,
+      })
+      const P = SessionSchema.ID.make("ses_p")
+      const C = SessionSchema.ID.make("ses_c")
+      const L = SessionSchema.ID.make("ses_l")
+      const U = SessionSchema.ID.make("ses_u")
+      const O = SessionSchema.ID.make("ses_o")
+
+      yield* db
+        .insert(SessionTable)
+        .values([
+          row(P, { family_archive_id: P, archive_cause: "user" }),
+          row(C, { parent_id: P, family_archive_id: P, archive_cause: "cascade" }),
+          row(L, { parent_id: P }),
+          row(U, { parent_id: P, archive_cause: "user" }),
+          row(O, { family_archive_id: SessionSchema.ID.make("ses_missing"), archive_cause: "cascade" }),
+        ])
+        .run()
+
+      const rows = yield* db.all<{ session_id: string; family_key: string }>(effectiveFamilyKeySql)
+      expect(new Map(rows.map((entry) => [entry.session_id, entry.family_key]))).toEqual(
+        new Map([
+          [P, P],
+          [C, P],
+          [L, P],
+          [U, U],
+          [O, O],
+        ]),
+      )
     }),
   )
 })
