@@ -42,5 +42,6 @@ export const migrations: DatabaseMigration.Migration[] = (
     import("./migration/20260622202450_simplify_session_input"),
     import("./migration/20261023000000_family_archive"),
     import("./migration/20261023000001_family_archive_backfill"),
+    import("./migration/20261023000002_family_archive_backfill_data"),
   ])
 ).map((module) => module.default)

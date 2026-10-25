@@ -12,6 +12,7 @@ import { migrations } from "@opencode-ai/core/database/migration.gen"
 import schema from "@opencode-ai/core/database/schema.gen"
 import familyArchiveMigration from "@opencode-ai/core/database/migration/20261023000000_family_archive"
 import familyArchiveBackfillMigration from "@opencode-ai/core/database/migration/20261023000001_family_archive_backfill"
+import familyArchiveBackfillDataMigration from "@opencode-ai/core/database/migration/20261023000002_family_archive_backfill_data"
 import type { SqlClient as SqlClientService } from "effect/unstable/sql/SqlClient"
 import { dryRun } from "../script/family-archive-dry-run"
 import { reconcile, rollback } from "../script/family-archive-rollback"
@@ -35,7 +36,7 @@ const seedExisting = (seed: (db: Db) => Effect.Effect<void>) =>
     const db = yield* makeDb
     yield* db.transaction((tx) => schema.up(tx))
     yield* seed(db)
-    yield* DatabaseMigration.applyOnly(db, [familyArchiveBackfillMigration])
+    yield* DatabaseMigration.applyOnly(db, [familyArchiveBackfillMigration, familyArchiveBackfillDataMigration])
     return db
   })
 
@@ -48,7 +49,7 @@ const withFileDatabase = async (seed: (db: Db) => Effect.Effect<void>) => {
       const db = yield* makeDb
       yield* db.transaction((tx) => schema.up(tx))
       yield* seed(db)
-      yield* DatabaseMigration.applyOnly(db, [familyArchiveBackfillMigration])
+      yield* DatabaseMigration.applyOnly(db, [familyArchiveBackfillMigration, familyArchiveBackfillDataMigration])
     }),
   )
   return {
@@ -237,7 +238,11 @@ describe("family archive migrations", () => {
         const journal = yield* db.all<{ id: string }>(
           sql`SELECT id FROM migration WHERE id LIKE '20261023%' ORDER BY id`,
         )
-        expect(journal.map((row) => row.id)).toEqual([familyArchiveMigration.id, familyArchiveBackfillMigration.id])
+        expect(journal.map((row) => row.id)).toEqual([
+          familyArchiveMigration.id,
+          familyArchiveBackfillMigration.id,
+          familyArchiveBackfillDataMigration.id,
+        ])
       }),
     )
   })
@@ -294,12 +299,66 @@ describe("family archive migrations", () => {
           yield* db.run(sql`CREATE TABLE ${sql.identifier(table)} (id text, session_id text, message_id text)`)
         }
 
-        yield* DatabaseMigration.applyOnly(db, [familyArchiveMigration, familyArchiveBackfillMigration])
+        yield* DatabaseMigration.applyOnly(db, [
+          familyArchiveMigration,
+          familyArchiveBackfillMigration,
+          familyArchiveBackfillDataMigration,
+        ])
 
         yield* assertFamilyArchiveSchema(db)
 
         const journal = yield* db.all<{ id: string }>(sql`SELECT id FROM migration ORDER BY id`)
-        expect(journal.map((row) => row.id)).toEqual([familyArchiveMigration.id, familyArchiveBackfillMigration.id])
+        expect(journal.map((row) => row.id)).toEqual([
+          familyArchiveMigration.id,
+          familyArchiveBackfillMigration.id,
+          familyArchiveBackfillDataMigration.id,
+        ])
+      }),
+    )
+  })
+
+  test("backfills data when the trigger migration is already journaled", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.transaction((tx) => schema.up(tx))
+        yield* seedProject(db)
+        yield* addSession(db, "root", { archived: 1000 })
+        yield* addSession(db, "child", { parent: "root" })
+
+        // Live shape: the trigger migration was applied (and journaled) before
+        // the data backfill existed.
+        yield* DatabaseMigration.applyOnly(db, [familyArchiveBackfillMigration])
+        expect((yield* row(db, "child")).time_archived).toBe(null)
+        expect(yield* count(db, "family_archive_migration")).toBe(0)
+
+        yield* DatabaseMigration.applyOnly(db, [familyArchiveBackfillMigration, familyArchiveBackfillDataMigration])
+
+        expect(yield* row(db, "root")).toMatchObject({
+          time_archived: 1000,
+          family_archive_id: "root",
+          archive_cause: "migration",
+        })
+        expect(yield* row(db, "child")).toMatchObject({
+          time_archived: 1000,
+          family_archive_id: "root",
+          archive_cause: "migration",
+        })
+        const snapshots = yield* db
+          .all<{
+            root_session_id: string
+            root_archived_at: number
+          }>(sql`SELECT root_session_id, root_archived_at FROM family_archive_migration`)
+          .pipe(Effect.orDie)
+        expect(snapshots).toEqual([{ root_session_id: "root", root_archived_at: 1000 }])
+        expect(yield* guardCount(db)).toBe(0)
+        const journal = yield* db.all<{ id: string }>(
+          sql`SELECT id FROM migration WHERE id LIKE '20261023%' ORDER BY id`,
+        )
+        expect(journal.map((row) => row.id)).toEqual([
+          familyArchiveBackfillMigration.id,
+          familyArchiveBackfillDataMigration.id,
+        ])
       }),
     )
   })
@@ -333,18 +392,23 @@ describe("family archive migrations", () => {
         yield* DatabaseMigration.apply(db)
         expect(yield* triggerNames(db)).toEqual(expected)
         const journal = yield* db.all<{ n: number }>(sql`SELECT COUNT(*) AS n FROM migration WHERE id LIKE '20261023%'`)
-        expect(journal[0]?.n).toBe(2)
+        expect(journal[0]?.n).toBe(3)
       }),
     )
   })
 
-  test("registers the backfill after the generated migration and marks it fresh-schema", () => {
+  test("registers both backfills after the generated migration and marks them fresh-schema", () => {
     const ids = migrations.map((migration) => migration.id)
     expect(ids.indexOf(familyArchiveMigration.id)).toBeGreaterThanOrEqual(0)
     expect(ids.indexOf(familyArchiveMigration.id)).toBeLessThan(ids.indexOf(familyArchiveBackfillMigration.id))
-    expect(migrations.find((migration) => migration.id === familyArchiveBackfillMigration.id)).toMatchObject({
-      runsOnFreshSchema: true,
-    })
+    expect(ids.indexOf(familyArchiveBackfillMigration.id)).toBeLessThan(
+      ids.indexOf(familyArchiveBackfillDataMigration.id),
+    )
+    for (const migration of [familyArchiveBackfillMigration, familyArchiveBackfillDataMigration]) {
+      expect(migrations.find((entry) => entry.id === migration.id)).toMatchObject({
+        runsOnFreshSchema: true,
+      })
+    }
     expect(
       migrations.find((migration) => migration.id === familyArchiveMigration.id)?.runsOnFreshSchema,
     ).toBeUndefined()
@@ -421,8 +485,8 @@ describe("family archive backfill", () => {
           .all<Record<string, unknown>>(sql`SELECT * FROM family_archive_migration ORDER BY root_session_id`)
           .pipe(Effect.orDie)
         // Force the backfill to run again instead of relying on the journal.
-        yield* db.run(sql`DELETE FROM migration WHERE id = ${familyArchiveBackfillMigration.id}`).pipe(Effect.orDie)
-        yield* DatabaseMigration.applyOnly(db, [familyArchiveBackfillMigration])
+        yield* db.run(sql`DELETE FROM migration WHERE id = ${familyArchiveBackfillDataMigration.id}`).pipe(Effect.orDie)
+        yield* DatabaseMigration.applyOnly(db, [familyArchiveBackfillDataMigration])
         expect(
           yield* db.all<Record<string, unknown>>(sql`SELECT * FROM session ORDER BY id`).pipe(Effect.orDie),
         ).toEqual(snapshot)
