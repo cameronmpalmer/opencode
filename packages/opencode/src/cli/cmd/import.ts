@@ -9,6 +9,7 @@ import {
   PartTable,
   SessionArchiveGuardTable,
   SessionImportExemptTable,
+  SessionPurgedTable,
   SessionTable,
 } from "@opencode-ai/core/session/sql"
 import { InstanceRef } from "@/effect/instance-ref"
@@ -224,6 +225,15 @@ export function writeImport(
                 existing.archive_cause !== null ||
                 existing.archive_state !== null ||
                 existing.archive_state_at !== null)
+
+            // A re-imported session is live again, so its purge tombstone must
+            // go before the insert. Deleting only this session's tombstone keeps
+            // an import of a child alone fail-closed under a purged parent.
+            yield* tx
+              .delete(SessionPurgedTable)
+              .where(eq(SessionPurgedTable.session_id, row.id))
+              .run()
+              .pipe(Effect.orDie)
 
             const exemptIDs = [row.id, ...(info.parentID ? [info.parentID] : [])]
             const expiresAt = Date.now() + importExemptionMs()

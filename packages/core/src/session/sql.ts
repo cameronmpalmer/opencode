@@ -88,6 +88,14 @@ export const SessionImportExemptTable = sqliteTable("session_import_exempt", {
   expires_at: integer().notNull(),
 })
 
+// Purge tombstones. The exporter writes one per deleted session id so the
+// session_purged_parent_insert/update triggers can reject a late child whose
+// parent no longer exists. Import deletes the tombstone before re-inserting.
+export const SessionPurgedTable = sqliteTable("session_purged", {
+  session_id: text().$type<SessionSchema.ID>().primaryKey(),
+  purged_at: integer().notNull(),
+})
+
 export const SessionArchiveGuardTable = sqliteTable("session_archive_guard", {
   session_id: text().$type<SessionSchema.ID>().primaryKey(),
 })

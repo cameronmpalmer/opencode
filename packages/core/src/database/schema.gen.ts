@@ -197,6 +197,12 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`session_purged\` (
+          \`session_id\` text PRIMARY KEY,
+          \`purged_at\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`session_run_lease\` (
           \`session_id\` text PRIMARY KEY,
           \`lease_id\` text NOT NULL,

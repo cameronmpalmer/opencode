@@ -13,6 +13,7 @@ import schema from "@opencode-ai/core/database/schema.gen"
 import familyArchiveMigration from "@opencode-ai/core/database/migration/20261023000000_family_archive"
 import familyArchiveBackfillMigration from "@opencode-ai/core/database/migration/20261023000001_family_archive_backfill"
 import familyArchiveBackfillDataMigration from "@opencode-ai/core/database/migration/20261023000002_family_archive_backfill_data"
+import sessionPurgedMigration from "@opencode-ai/core/database/migration/20261023000003_session_purged"
 import type { SqlClient as SqlClientService } from "effect/unstable/sql/SqlClient"
 import { dryRun } from "../script/family-archive-dry-run"
 import { reconcile, rollback } from "../script/family-archive-rollback"
@@ -36,7 +37,11 @@ const seedExisting = (seed: (db: Db) => Effect.Effect<void>) =>
     const db = yield* makeDb
     yield* db.transaction((tx) => schema.up(tx))
     yield* seed(db)
-    yield* DatabaseMigration.applyOnly(db, [familyArchiveBackfillMigration, familyArchiveBackfillDataMigration])
+    yield* DatabaseMigration.applyOnly(db, [
+      familyArchiveBackfillMigration,
+      familyArchiveBackfillDataMigration,
+      sessionPurgedMigration,
+    ])
     return db
   })
 
@@ -49,7 +54,11 @@ const withFileDatabase = async (seed: (db: Db) => Effect.Effect<void>) => {
       const db = yield* makeDb
       yield* db.transaction((tx) => schema.up(tx))
       yield* seed(db)
-      yield* DatabaseMigration.applyOnly(db, [familyArchiveBackfillMigration, familyArchiveBackfillDataMigration])
+      yield* DatabaseMigration.applyOnly(db, [
+        familyArchiveBackfillMigration,
+        familyArchiveBackfillDataMigration,
+        sessionPurgedMigration,
+      ])
     }),
   )
   return {
@@ -132,12 +141,12 @@ const count = (db: Db, table: string) =>
 
 const guardCount = (db: Db) => count(db, "session_archive_guard")
 
-const expectAbort = <A, E>(effect: Effect.Effect<A, E>) =>
+const expectAbort = <A, E>(effect: Effect.Effect<A, E>, message = "SessionArchivedError") =>
   Effect.gen(function* () {
     const exit = yield* effect.pipe(Effect.exit)
     expect(Exit.isFailure(exit)).toBe(true)
     if (!Exit.isFailure(exit)) return
-    expect(Cause.pretty(exit.cause)).toContain("SessionArchivedError")
+    expect(Cause.pretty(exit.cause)).toContain(message)
   })
 
 // Direct archive-field writes in tests stand in for the runtime handlers.
@@ -171,12 +180,13 @@ const assertFamilyArchiveSchema = (db: Db) =>
     }
 
     const tables = yield* db.all<{ name: string }>(
-      sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('session_run_lease', 'session_import_exempt', 'session_archive_guard', 'family_archive_migration')`,
+      sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('session_run_lease', 'session_import_exempt', 'session_archive_guard', 'family_archive_migration', 'session_purged')`,
     )
     expect(tables.map((table) => table.name).sort()).toEqual([
       "family_archive_migration",
       "session_archive_guard",
       "session_import_exempt",
+      "session_purged",
       "session_run_lease",
     ])
 
@@ -204,6 +214,11 @@ const assertFamilyArchiveSchema = (db: Db) =>
     expect(archiveMigration.find((column) => column.name === "root_session_id")?.pk).toBe(1)
     expect(archiveMigration.find((column) => column.name === "root_archived_at")?.notnull).toBe(1)
     expect(archiveMigration.find((column) => column.name === "applied_at")?.notnull).toBe(1)
+
+    const purged = yield* tableInfo(db, "session_purged")
+    expect(purged.map((column) => column.name)).toEqual(["session_id", "purged_at"])
+    expect(purged.find((column) => column.name === "session_id")?.pk).toBe(1)
+    expect(purged.find((column) => column.name === "purged_at")?.notnull).toBe(1)
 
     const sessionIndexes = yield* indexList(db, "session")
     expect(sessionIndexes.find((index) => index.name === "session_family_archive_idx")?.unique).toBe(0)
@@ -242,6 +257,7 @@ describe("family archive migrations", () => {
           familyArchiveMigration.id,
           familyArchiveBackfillMigration.id,
           familyArchiveBackfillDataMigration.id,
+          sessionPurgedMigration.id,
         ])
       }),
     )
@@ -303,6 +319,7 @@ describe("family archive migrations", () => {
           familyArchiveMigration,
           familyArchiveBackfillMigration,
           familyArchiveBackfillDataMigration,
+          sessionPurgedMigration,
         ])
 
         yield* assertFamilyArchiveSchema(db)
@@ -312,6 +329,7 @@ describe("family archive migrations", () => {
           familyArchiveMigration.id,
           familyArchiveBackfillMigration.id,
           familyArchiveBackfillDataMigration.id,
+          sessionPurgedMigration.id,
         ])
       }),
     )
@@ -363,6 +381,55 @@ describe("family archive migrations", () => {
     )
   })
 
+  test("a tombstoned missing parent rejects child inserts and moves, and an import exemption does not bypass it", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+        yield* seedProject(db)
+        yield* addSession(db, "P")
+        yield* addSession(db, "C", { parent: "P" })
+        yield* db.run(sql`DELETE FROM session WHERE id = 'P'`).pipe(Effect.orDie)
+        yield* db.run(sql`INSERT INTO session_purged (session_id, purged_at) VALUES ('P', 1)`).pipe(Effect.orDie)
+        // Import exemptions exist to relax archive checks during a re-import;
+        // they must never authorize a child under a missing parent.
+        yield* db
+          .run(sql`INSERT INTO session_import_exempt (session_id, expires_at) VALUES ('late', ${Date.now() + 60_000})`)
+          .pipe(Effect.orDie)
+
+        yield* expectAbort(
+          db.run(sql`
+            INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated)
+            VALUES ('late', 'prj', 'P', 'late', '/p', 'late', 'v', 1, 1)
+          `),
+          "SessionPurgedError",
+        )
+
+        // Once the parent row exists again the same insert is legal.
+        yield* addSession(db, "P")
+        yield* db
+          .run(
+            sql`
+            INSERT INTO session (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated)
+            VALUES ('late', 'prj', 'P', 'late', '/p', 'late', 'v', 1, 1)
+          `,
+          )
+          .pipe(Effect.orDie)
+
+        // BEFORE UPDATE OF parent_id has the same guard.
+        yield* addSession(db, "P2")
+        yield* addSession(db, "C2")
+        yield* db.run(sql`DELETE FROM session WHERE id = 'P2'`).pipe(Effect.orDie)
+        yield* db.run(sql`INSERT INTO session_purged (session_id, purged_at) VALUES ('P2', 1)`).pipe(Effect.orDie)
+        yield* expectAbort(db.run(sql`UPDATE session SET parent_id = 'P2' WHERE id = 'C2'`), "SessionPurgedError")
+        const untouched = yield* db
+          .get<{ parent_id: string | null }>(sql`SELECT parent_id FROM session WHERE id = 'C2'`)
+          .pipe(Effect.orDie)
+        expect(untouched?.parent_id).toBeNull()
+      }),
+    )
+  })
+
   test("installs every archive trigger and applying the migrations twice is a journal-gated no-op", async () => {
     await run(
       Effect.gen(function* () {
@@ -382,6 +449,8 @@ describe("family archive migrations", () => {
           "session_input_family_archive_update",
           "session_message_family_archive_insert",
           "session_message_family_archive_update",
+          "session_purged_parent_insert",
+          "session_purged_parent_update",
           "session_share_family_archive_insert",
           "session_share_family_archive_update",
           "todo_family_archive_insert",
@@ -392,19 +461,24 @@ describe("family archive migrations", () => {
         yield* DatabaseMigration.apply(db)
         expect(yield* triggerNames(db)).toEqual(expected)
         const journal = yield* db.all<{ n: number }>(sql`SELECT COUNT(*) AS n FROM migration WHERE id LIKE '20261023%'`)
-        expect(journal[0]?.n).toBe(3)
+        expect(journal[0]?.n).toBe(4)
       }),
     )
   })
 
-  test("registers both backfills after the generated migration and marks them fresh-schema", () => {
+  test("registers the backfills and tombstone after the generated migration and marks them fresh-schema", () => {
     const ids = migrations.map((migration) => migration.id)
     expect(ids.indexOf(familyArchiveMigration.id)).toBeGreaterThanOrEqual(0)
     expect(ids.indexOf(familyArchiveMigration.id)).toBeLessThan(ids.indexOf(familyArchiveBackfillMigration.id))
     expect(ids.indexOf(familyArchiveBackfillMigration.id)).toBeLessThan(
       ids.indexOf(familyArchiveBackfillDataMigration.id),
     )
-    for (const migration of [familyArchiveBackfillMigration, familyArchiveBackfillDataMigration]) {
+    expect(ids.indexOf(familyArchiveBackfillDataMigration.id)).toBeLessThan(ids.indexOf(sessionPurgedMigration.id))
+    for (const migration of [
+      familyArchiveBackfillMigration,
+      familyArchiveBackfillDataMigration,
+      sessionPurgedMigration,
+    ]) {
       expect(migrations.find((entry) => entry.id === migration.id)).toMatchObject({
         runsOnFreshSchema: true,
       })

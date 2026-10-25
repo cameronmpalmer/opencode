@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "45b1a4ab-b8f9-413a-865e-533bba5a223b",
+  "id": "0e5942eb-88a6-480f-99e0-5db250656cc1",
   "prevIds": [
-    "f14a9b18-8207-487e-a3d3-227e629ba9ad"
+    "45b1a4ab-b8f9-413a-865e-533bba5a223b"
   ],
   "ddl": [
     {
@@ -80,6 +80,10 @@
     },
     {
       "name": "session_message",
+      "entityType": "tables"
+    },
+    {
+      "name": "session_purged",
       "entityType": "tables"
     },
     {
@@ -1146,6 +1150,26 @@
       "generated": null,
       "name": "session_id",
       "entityType": "columns",
+      "table": "session_purged"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "purged_at",
+      "entityType": "columns",
+      "table": "session_purged"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
       "table": "session_run_lease"
     },
     {
@@ -2014,6 +2038,15 @@
       "nameExplicit": false,
       "name": "session_message_pk",
       "table": "session_message",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "session_id"
+      ],
+      "nameExplicit": false,
+      "name": "session_purged_pk",
+      "table": "session_purged",
       "entityType": "pks"
     },
     {

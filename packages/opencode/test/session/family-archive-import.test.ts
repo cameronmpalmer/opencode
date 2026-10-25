@@ -7,12 +7,13 @@ import {
   PartTable,
   SessionArchiveGuardTable,
   SessionImportExemptTable,
+  SessionPurgedTable,
   SessionTable,
 } from "@opencode-ai/core/session/sql"
 import { Database } from "@opencode-ai/core/database/database"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { eq, sql } from "drizzle-orm"
-import { Effect } from "effect"
+import { Cause, Effect } from "effect"
 import { Project } from "@/project/project"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -185,6 +186,53 @@ describe("family archive import", () => {
         .pipe(Effect.orDie)
       expect(storedParts.map((item) => item.id)).toEqual([importedPart.id])
       yield* noImportState(db)
+    }),
+  )
+
+  it.instance("clears a purge tombstone before re-importing a parent so its child can follow", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const { db } = yield* Database.Service
+      const base = yield* session.create({ title: "base" })
+      const parentID = SessionID.descending()
+      const parentInfo: SessionNs.Info = { ...base, id: parentID, time: { ...base.time } }
+      yield* db.insert(SessionPurgedTable).values({ session_id: parentID, purged_at: 1_000 }).run().pipe(Effect.orDie)
+
+      yield* writeImport(db, parentInfo, [])
+
+      const parent = yield* db.select().from(SessionTable).where(eq(SessionTable.id, parentID)).get().pipe(Effect.orDie)
+      expect(parent).toBeDefined()
+      const tombstonesAfterParent = yield* db.select().from(SessionPurgedTable).all().pipe(Effect.orDie)
+      expect(tombstonesAfterParent).toEqual([])
+
+      const childID = SessionID.descending()
+      const childInfo: SessionNs.Info = { ...parentInfo, id: childID, parentID, time: { ...parentInfo.time } }
+      yield* writeImport(db, childInfo, [])
+
+      const child = yield* db.select().from(SessionTable).where(eq(SessionTable.id, childID)).get().pipe(Effect.orDie)
+      expect(child?.parent_id).toBe(parentID)
+      yield* noImportState(db)
+    }),
+  )
+
+  it.instance("imports a child alone under a purged parent fail-closed", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const { db } = yield* Database.Service
+      const base = yield* session.create({ title: "base" })
+      const parentID = SessionID.descending()
+      const childID = SessionID.descending()
+      yield* db.insert(SessionPurgedTable).values({ session_id: parentID, purged_at: 1_000 }).run().pipe(Effect.orDie)
+      const childInfo: SessionNs.Info = { ...base, id: childID, parentID, time: { ...base.time } }
+
+      const exit = yield* Effect.exit(writeImport(db, childInfo, []))
+
+      expect(exit._tag).toBe("Failure")
+      if (exit._tag === "Failure") expect(Cause.pretty(exit.cause)).toContain("SessionPurgedError")
+      const child = yield* db.select().from(SessionTable).where(eq(SessionTable.id, childID)).get().pipe(Effect.orDie)
+      expect(child).toBeUndefined()
+      const tombstones = yield* db.select().from(SessionPurgedTable).all().pipe(Effect.orDie)
+      expect(tombstones.map((row) => row.session_id)).toEqual([parentID])
     }),
   )
 
