@@ -4,12 +4,26 @@ import { Database as SQLiteDatabase } from "bun:sqlite"
 import { Database } from "../src/database/database"
 
 /**
- * Undo the deterministic family archive backfill.
+ * Undo the deterministic family archive backfill and reconcile leftovers.
  *
  * The script is deliberately conservative: it only touches rows that still
  * match the migration snapshot (same family key, same archive time, and
  * `archive_cause = 'migration'`). Anything the user re-archived after the
  * snapshot is left alone, and its snapshot row is kept.
+ *
+ * Rollout operator steps (manual, no automation here):
+ *   1. Pause the nightly purge.
+ *   2. Run family-archive-dry-run.ts against the production database and
+ *      record the output.
+ *   3. Apply the schema and backfill migrations at server start.
+ *   4. Enable `familyArchive` in staging, then production.
+ *   5. Call `archiveSubtree` for every archived root so live legacy leases are
+ *      interrupted. A failed lease fails closed with the blocking session IDs.
+ *   6. Run `family-archive-rollback.ts --reconcile`, then verify one family end
+ *      to end.
+ *   7. Deploy the pipeline only after A and B are live.
+ *   8. Re-enable the nightly purge after the migration and the first pipeline
+ *      run.
  */
 
 export type RollbackReport = {
@@ -23,36 +37,6 @@ export type RollbackReport = {
 export type ReconcileReport = {
   updated: string[]
 }
-
-const descendantsWithArchivedAncestors = `
-  WITH RECURSIVE ancestors(
-    session_id, ancestor_id, time_archived, family_archive_id, parent_id, depth, path
-  ) AS (
-    SELECT
-      s.id, p.id, p.time_archived, p.family_archive_id, p.parent_id,
-      1, ',' || p.id || ','
-    FROM session s
-    JOIN session p ON p.id = s.parent_id
-    UNION ALL
-    SELECT
-      a.session_id, p.id, p.time_archived, p.family_archive_id, p.parent_id,
-      a.depth + 1, a.path || p.id || ','
-    FROM ancestors a
-    JOIN session p ON p.id = a.parent_id
-    WHERE a.parent_id IS NOT NULL
-      AND instr(a.path, ',' || p.id || ',') = 0
-  ),
-  nearest AS (
-    SELECT
-      session_id, ancestor_id, time_archived, family_archive_id, depth,
-      ROW_NUMBER() OVER (
-        PARTITION BY session_id
-        ORDER BY depth, ancestor_id
-      ) AS rank
-    FROM ancestors
-    WHERE time_archived IS NOT NULL
-  )
-`
 
 const beginImmediate = (db: SQLiteDatabase) => db.run("BEGIN IMMEDIATE")
 const commit = (db: SQLiteDatabase) => db.run("COMMIT")
@@ -73,6 +57,11 @@ function insideImmediate<T>(db: SQLiteDatabase, fn: () => T): T {
 function insertGuards(db: SQLiteDatabase, ids: string[]) {
   const insert = db.prepare("INSERT OR IGNORE INTO session_archive_guard (session_id) VALUES (?)")
   for (const id of ids) insert.run(id)
+}
+
+function deleteGuards(db: SQLiteDatabase, ids: string[]) {
+  const remove = db.prepare("DELETE FROM session_archive_guard WHERE session_id = ?")
+  for (const id of ids) remove.run(id)
 }
 
 export function rollback(db: SQLiteDatabase): RollbackReport {
@@ -167,10 +156,32 @@ export function rollback(db: SQLiteDatabase): RollbackReport {
       }
     }
 
+    // Defensive: never delete a snapshot while any row still matches its
+    // migration predicate. The match query above is exhaustive, so this should
+    // be empty; keeping the snapshot preserves recovery if a row was missed.
+    const residual = db.prepare(`
+      SELECT 1
+      FROM session s
+      JOIN family_archive_migration m
+        ON s.family_archive_id = m.root_session_id
+       AND s.time_archived = m.root_archived_at
+       AND s.archive_cause = 'migration'
+      WHERE m.root_session_id = ?
+      LIMIT 1
+    `)
     const deleteSnapshot = db.prepare("DELETE FROM family_archive_migration WHERE root_session_id = ?")
-    for (const root of clearedRoots) deleteSnapshot.run(root)
+    for (const root of clearedRoots) {
+      if (residual.get(root)) {
+        if (!skippedSnapshots.includes(root)) skippedSnapshots.push(root)
+        continue
+      }
+      deleteSnapshot.run(root)
+    }
 
-    db.run("DELETE FROM session_archive_guard")
+    deleteGuards(
+      db,
+      matches.map((row) => row.id),
+    )
 
     return {
       roots: clearedRoots.size,
@@ -190,86 +201,107 @@ export function rollback(db: SQLiteDatabase): RollbackReport {
  * archived, no-lease family before it would stamp anything.
  */
 export function reconcile(db: SQLiteDatabase): ReconcileReport {
+  type ReconcileRow = {
+    id: string
+    parent_id: string | null
+    time_archived: number | null
+    family_archive_id: string | null
+    archive_cause: string | null
+  }
+
   return insideImmediate(db, () => {
-    const targets = db
-      .query<{ id: string }, []>(
+    const sessions = db
+      .query<ReconcileRow, []>(
         `
-        SELECT id FROM session
-        WHERE time_archived IS NOT NULL
-          AND family_archive_id IS NULL
-          AND archive_cause IS NULL
+        SELECT id, parent_id, time_archived, family_archive_id, archive_cause
+        FROM session
         ORDER BY id
       `,
       )
       .all()
+    const byID = new Map(sessions.map((row) => [row.id, row]))
+    const targets = sessions
+      .filter((row) => row.time_archived !== null && row.family_archive_id === null && row.archive_cause === null)
       .map((row) => row.id)
 
     if (targets.length === 0) return { updated: [] }
 
-    insertGuards(db, targets)
+    const nearestArchivedAncestor = (id: string) => {
+      const seen = new Set<string>([id])
+      let parent = byID.get(id)?.parent_id ?? null
+      while (parent && !seen.has(parent)) {
+        const row = byID.get(parent)
+        if (!row) return undefined
+        if (row.time_archived !== null) return row
+        seen.add(parent)
+        parent = row.parent_id
+      }
+      return undefined
+    }
 
-    db.run(`
-      ${descendantsWithArchivedAncestors},
-      resolved AS (
-        SELECT
-          t.id,
-          COALESCE(
-            (
-              SELECT a.family_archive_id
-              FROM ancestors a
-              WHERE a.session_id = t.id
-                AND a.time_archived IS NOT NULL
-                AND a.family_archive_id IS NOT NULL
-              ORDER BY a.depth
-              LIMIT 1
-            ),
-            (
-              SELECT a.ancestor_id
-              FROM ancestors a
-              WHERE a.session_id = t.id AND a.time_archived IS NOT NULL
-              ORDER BY a.depth DESC
-              LIMIT 1
-            )
-          ) AS family_key,
-          EXISTS (
-            SELECT 1 FROM ancestors a
-            WHERE a.session_id = t.id AND a.time_archived IS NOT NULL
-          ) AS has_ancestor
-        FROM session t
-        WHERE t.time_archived IS NOT NULL
-          AND t.family_archive_id IS NULL
-          AND t.archive_cause IS NULL
-      )
-      UPDATE session AS s
-      SET
-        family_archive_id = COALESCE(
-          (SELECT r.family_key FROM resolved r WHERE r.id = s.id),
-          s.id
-        ),
-        archive_cause = CASE
-          WHEN (SELECT r.has_ancestor FROM resolved r WHERE r.id = s.id) = 1 THEN 'migration'
-          ELSE 'user'
-        END
-      WHERE s.time_archived IS NOT NULL
-        AND s.family_archive_id IS NULL
-        AND s.archive_cause IS NULL
-    `)
+    const keys = new Map<string, string>()
+    const effectiveKey = (id: string, visiting = new Set<string>()): string => {
+      const cached = keys.get(id)
+      if (cached !== undefined) return cached
+      const row = byID.get(id)
+      if (!row) return id
+      if (visiting.has(id)) return id
+      visiting.add(id)
 
-    db.run("DELETE FROM session_archive_guard")
+      let key = id
+      if (row.family_archive_id !== null) {
+        // An existing family root wins. A missing root on an archived row
+        // makes that row its own family.
+        key = byID.has(row.family_archive_id) ? row.family_archive_id : id
+      } else if (row.archive_cause === "user") {
+        key = id
+      } else {
+        // Legacy null/null rows fall back to the nearest archived ancestor
+        // above them, recursively, and to themselves when there is none.
+        const ancestor = nearestArchivedAncestor(id)
+        key = ancestor ? effectiveKey(ancestor.id, visiting) : id
+      }
+
+      visiting.delete(id)
+      keys.set(id, key)
+      return key
+    }
+
+    const resolved = targets.map((id) => {
+      const ancestor = nearestArchivedAncestor(id)
+      if (!ancestor) return { id, family: id, cause: "user" as const }
+      return { id, family: effectiveKey(ancestor.id), cause: "migration" as const }
+    })
+
+    insertGuards(
+      db,
+      resolved.map((row) => row.id),
+    )
+    const update = db.prepare("UPDATE session SET family_archive_id = ?, archive_cause = ? WHERE id = ?")
+    for (const row of resolved) update.run(row.family, row.cause, row.id)
+    deleteGuards(
+      db,
+      resolved.map((row) => row.id),
+    )
+
     return { updated: targets }
   })
 }
 
 function parseDBPath(argv: string[]) {
   const index = argv.indexOf("--db")
-  if (index >= 0) return argv[index + 1]
+  if (index >= 0) {
+    const value = argv[index + 1]
+    if (!value || value.startsWith("--")) throw new Error("--db requires a database path")
+    return value
+  }
   return Database.path()
 }
 
 if (import.meta.main) {
   const argv = process.argv.slice(2)
   const path = parseDBPath(argv)
-  const db = new SQLiteDatabase(path, { readwrite: true })
+  const db = new SQLiteDatabase(path, { readwrite: true, create: false })
   try {
     if (argv.includes("--reconcile")) {
       const report = reconcile(db)

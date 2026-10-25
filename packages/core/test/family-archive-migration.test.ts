@@ -146,7 +146,9 @@ const guardedUpdate = (db: Db, ids: string[], statement: string) =>
       yield* db.run(sql`INSERT OR IGNORE INTO session_archive_guard (session_id) VALUES (${id})`).pipe(Effect.orDie)
     }
     yield* db.run(sql.raw(statement)).pipe(Effect.orDie)
-    yield* db.run(sql`DELETE FROM session_archive_guard`).pipe(Effect.orDie)
+    for (const id of ids) {
+      yield* db.run(sql`DELETE FROM session_archive_guard WHERE session_id = ${id}`).pipe(Effect.orDie)
+    }
   })
 
 const tableInfo = (db: Db, table: string) =>
@@ -392,7 +394,10 @@ describe("family archive backfill", () => {
         expect((yield* row(db, "root_a")).archive_cause).toBe("migration")
         expect((yield* row(db, "root_b")).archive_cause).toBe("migration")
         expect((yield* row(db, "c000")).archive_cause).toBe("migration")
-        expect((yield* row(db, "c000")).time_updated).toBe(1001)
+        expect(active.size).toBe(18)
+        for (const id of active) {
+          expect((yield* row(db, id)).time_updated).toBeGreaterThan(1000)
+        }
         expect((yield* row(db, "c050")).time_updated).toBe(10)
         expect(yield* count(db, "session")).toBe(beforeSessions)
         expect(yield* count(db, "message")).toBe(beforeMessages)
@@ -412,10 +417,20 @@ describe("family archive backfill", () => {
         const snapshot = yield* db
           .all<Record<string, unknown>>(sql`SELECT * FROM session ORDER BY id`)
           .pipe(Effect.orDie)
+        const snapshotRows = yield* db
+          .all<Record<string, unknown>>(sql`SELECT * FROM family_archive_migration ORDER BY root_session_id`)
+          .pipe(Effect.orDie)
+        // Force the backfill to run again instead of relying on the journal.
+        yield* db.run(sql`DELETE FROM migration WHERE id = ${familyArchiveBackfillMigration.id}`).pipe(Effect.orDie)
         yield* DatabaseMigration.applyOnly(db, [familyArchiveBackfillMigration])
         expect(
           yield* db.all<Record<string, unknown>>(sql`SELECT * FROM session ORDER BY id`).pipe(Effect.orDie),
         ).toEqual(snapshot)
+        expect(
+          yield* db
+            .all<Record<string, unknown>>(sql`SELECT * FROM family_archive_migration ORDER BY root_session_id`)
+            .pipe(Effect.orDie),
+        ).toEqual(snapshotRows)
         expect(yield* count(db, "session_archive_guard")).toBe(0)
       }),
     )
@@ -471,15 +486,21 @@ describe("family archive backfill", () => {
   })
 
   test("produces the same result regardless of seed order", async () => {
-    const ids = ["a", "b", "c", "d", "e", "f"]
+    const nodes: Record<string, Parameters<typeof addSession>[2]> = {
+      P: { archived: 1000 },
+      C: { parent: "P", archived: 2000 },
+      a: { parent: "P" },
+      b: { parent: "P" },
+      c: { parent: "P" },
+      d: { parent: "P" },
+      e: { parent: "P" },
+      f: { parent: "C" },
+    }
+    const ids = Object.keys(nodes)
     const seed = (order: string[]) => (db: Db) =>
       Effect.gen(function* () {
         yield* seedProject(db)
-        yield* addSession(db, "P", { archived: 1000 })
-        yield* addSession(db, "C", { parent: "P", archived: 2000 })
-        for (const id of order) {
-          yield* addSession(db, id, { parent: id === "f" ? "C" : "P" })
-        }
+        for (const id of order) yield* addSession(db, id, nodes[id])
       })
     const read = (db: Db) =>
       Effect.gen(function* () {
@@ -723,7 +744,6 @@ describe("family archive reconciliation", () => {
       // to simulate a pre-trigger writer that archived after the migration.
       const db = new SQLite(filename)
       try {
-        db.run("UPDATE family_archive_migration SET root_archived_at = root_archived_at")
         for (const id of ["R", "P", "C", "G", "U"]) {
           db.run("INSERT OR IGNORE INTO session_archive_guard (session_id) VALUES (?)", [id])
         }
@@ -821,6 +841,94 @@ describe("family archive dry run", () => {
       expect(report.unarchived_descendants.find((row) => row.id === "c18")?.post_archive_activity).toBe(false)
     } finally {
       await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("family archive rollout migration review", () => {
+  test("dry-run works against the pre-migration session schema", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "family-archive-legacy-dry-run-"))
+    const filename = join(dir, "legacy.db")
+    try {
+      const db = new SQLite(filename)
+      try {
+        db.run(
+          "CREATE TABLE session (id text PRIMARY KEY, parent_id text, time_archived integer, time_updated integer)",
+        )
+        db.run("INSERT INTO session VALUES ('root', NULL, 1000, 1)")
+        db.run("INSERT INTO session VALUES ('child', 'root', NULL, 1001)")
+        db.run("INSERT INTO session VALUES ('grandchild', 'child', NULL, 1002)")
+      } finally {
+        db.close()
+      }
+
+      const report = dryRun(filename)
+      expect(report.counts).toEqual({
+        roots: 1,
+        unarchived_descendants: 2,
+        post_archive_activity: 2,
+      })
+      expect(report.roots).toEqual([
+        { id: "root", time_archived: 1000, unarchived_descendants: 2, post_archive_activity: 2 },
+      ])
+      expect(report.unarchived_descendants.map((row) => row.id)).toEqual(["child", "grandchild"])
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("reconciliation keeps a nearer user-cause standalone ancestor and handles a missing family root", async () => {
+    const { filename, cleanup } = await withFileDatabase((db) =>
+      Effect.gen(function* () {
+        yield* seedProject(db)
+        yield* addSession(db, "R", { archived: 1000, family: "R", cause: "user" })
+        yield* addSession(db, "C", { parent: "R", archived: 2000, cause: "user" })
+        yield* addSession(db, "G", { parent: "C", archived: 3000 })
+        yield* addSession(db, "M", { archived: 4000, family: "missing", cause: "cascade" })
+        yield* addSession(db, "N", { parent: "M", archived: 5000 })
+      }),
+    )
+    try {
+      const db = new SQLite(filename)
+      try {
+        for (const id of ["C", "G", "N"]) {
+          db.run("INSERT OR IGNORE INTO session_archive_guard (session_id) VALUES (?)", [id])
+        }
+        db.run("UPDATE session SET family_archive_id = NULL, archive_cause = 'user' WHERE id = 'C'")
+        db.run("UPDATE session SET family_archive_id = NULL, archive_cause = NULL WHERE id IN ('G', 'N')")
+        db.run("DELETE FROM session_archive_guard")
+        db.run("DELETE FROM family_archive_migration")
+
+        const report = reconcile(db)
+        expect(report.updated.sort()).toEqual(["G", "N"])
+        expect(
+          db.query("SELECT time_archived, family_archive_id, archive_cause FROM session WHERE id = 'G'").get(),
+        ).toEqual({
+          time_archived: 3000,
+          family_archive_id: "C",
+          archive_cause: "migration",
+        })
+        expect(
+          db.query("SELECT time_archived, family_archive_id, archive_cause FROM session WHERE id = 'N'").get(),
+        ).toEqual({
+          time_archived: 5000,
+          family_archive_id: "M",
+          archive_cause: "migration",
+        })
+        expect(db.query("SELECT family_archive_id, archive_cause FROM session WHERE id = 'C'").get()).toEqual({
+          family_archive_id: null,
+          archive_cause: "user",
+        })
+        expect(db.query("SELECT family_archive_id, archive_cause FROM session WHERE id = 'R'").get()).toEqual({
+          family_archive_id: "R",
+          archive_cause: "user",
+        })
+        expect(db.query("SELECT COUNT(*) AS n FROM session_archive_guard").get()).toEqual({ n: 0 })
+      } finally {
+        db.close()
+      }
+    } finally {
+      await cleanup()
     }
   })
 })

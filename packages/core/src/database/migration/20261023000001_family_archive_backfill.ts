@@ -53,9 +53,13 @@ const archivedAncestors = `
   )
 `
 
-const backfillGuards = `
+const createBackfillIDs = `
+  CREATE TEMP TABLE family_archive_backfill_ids (session_id text PRIMARY KEY)
+`
+
+const collectBackfillIDs = `
   ${archivedAncestors}
-  INSERT OR IGNORE INTO session_archive_guard (session_id)
+  INSERT OR IGNORE INTO family_archive_backfill_ids (session_id)
   SELECT s.id
   FROM session s
   WHERE (s.time_archived IS NOT NULL AND s.family_archive_id IS NULL)
@@ -67,6 +71,18 @@ const backfillGuards = `
        )
      )
 `
+
+const insertBackfillGuards = `
+  INSERT OR IGNORE INTO session_archive_guard (session_id)
+  SELECT session_id FROM family_archive_backfill_ids
+`
+
+const clearBackfillGuards = `
+  DELETE FROM session_archive_guard
+  WHERE session_id IN (SELECT session_id FROM family_archive_backfill_ids)
+`
+
+const dropBackfillIDs = `DROP TABLE temp.family_archive_backfill_ids`
 
 const backfillRoots = `
   UPDATE session
@@ -133,7 +149,7 @@ export default {
       // A new child session may not be inserted anywhere under an archived or
       // archiving ancestor. Import may opt the exact new session out until expiry.
       yield* tx.run(`
-        CREATE TRIGGER \`session_family_archive_insert\`
+        CREATE TRIGGER IF NOT EXISTS \`session_family_archive_insert\`
         BEFORE INSERT ON \`session\`
         WHEN NEW.parent_id IS NOT NULL
           AND NOT EXISTS (
@@ -150,7 +166,7 @@ export default {
       // Archive-field changes require an explicit guard or an active import
       // exemption. Archived rows may otherwise only change archive fields.
       yield* tx.run(`
-        CREATE TRIGGER \`session_family_archive_update\`
+        CREATE TRIGGER IF NOT EXISTS \`session_family_archive_update\`
         BEFORE UPDATE ON \`session\`
         BEGIN
           SELECT CASE WHEN (
@@ -212,7 +228,7 @@ export default {
 
       // Message rows resolve their session directly.
       yield* tx.run(`
-        CREATE TRIGGER \`message_family_archive_insert\`
+        CREATE TRIGGER IF NOT EXISTS \`message_family_archive_insert\`
         BEFORE INSERT ON \`message\`
         WHEN EXISTS (
           SELECT 1 FROM \`session\` s
@@ -228,7 +244,7 @@ export default {
         END;
       `)
       yield* tx.run(`
-        CREATE TRIGGER \`message_family_archive_update\`
+        CREATE TRIGGER IF NOT EXISTS \`message_family_archive_update\`
         BEFORE UPDATE ON \`message\`
         WHEN EXISTS (
             SELECT 1 FROM \`session\` s
@@ -277,7 +293,7 @@ export default {
           )
       `
       yield* tx.run(`
-        CREATE TRIGGER \`part_family_archive_insert\`
+        CREATE TRIGGER IF NOT EXISTS \`part_family_archive_insert\`
         BEFORE INSERT ON \`part\`
         WHEN NOT EXISTS (${writablePartMessage("NEW.message_id")})
           OR EXISTS (${archivedSession("NEW.session_id")})
@@ -286,7 +302,7 @@ export default {
         END;
       `)
       yield* tx.run(`
-        CREATE TRIGGER \`part_family_archive_update\`
+        CREATE TRIGGER IF NOT EXISTS \`part_family_archive_update\`
         BEFORE UPDATE ON \`part\`
         WHEN NOT EXISTS (${writablePartMessage("OLD.message_id")})
           OR NOT EXISTS (${writablePartMessage("NEW.message_id")})
@@ -300,7 +316,7 @@ export default {
       // Session-scoped state rows are immutable once the session is archived.
       for (const table of sessionScopedTables) {
         yield* tx.run(`
-          CREATE TRIGGER \`${table}_family_archive_insert\`
+          CREATE TRIGGER IF NOT EXISTS \`${table}_family_archive_insert\`
           BEFORE INSERT ON \`${table}\`
           WHEN EXISTS (
             SELECT 1 FROM \`session\` s
@@ -316,7 +332,7 @@ export default {
           END;
         `)
         yield* tx.run(`
-          CREATE TRIGGER \`${table}_family_archive_update\`
+          CREATE TRIGGER IF NOT EXISTS \`${table}_family_archive_update\`
           BEFORE UPDATE ON \`${table}\`
           WHEN EXISTS (
               SELECT 1 FROM \`session\` s
@@ -346,7 +362,10 @@ export default {
       // family becomes its own root, then every unarchived descendant inherits
       // the nearest archived ancestor's family and archive time. Raw SQL keeps
       // time_updated untouched. Guards authorize only the archive-field writes.
-      yield* tx.run(backfillGuards)
+      yield* tx.run(`DROP TABLE IF EXISTS temp.family_archive_backfill_ids`)
+      yield* tx.run(createBackfillIDs)
+      yield* tx.run(collectBackfillIDs)
+      yield* tx.run(insertBackfillGuards)
       yield* tx.run(`
         INSERT OR IGNORE INTO family_archive_migration (root_session_id, root_archived_at, applied_at)
         SELECT id, time_archived, ${now}
@@ -355,7 +374,8 @@ export default {
       `)
       yield* tx.run(backfillRoots)
       yield* tx.run(backfillDescendants)
-      yield* tx.run(`DELETE FROM session_archive_guard`)
+      yield* tx.run(clearBackfillGuards)
+      yield* tx.run(dropBackfillIDs)
     })
   },
 } satisfies DatabaseMigration.Migration

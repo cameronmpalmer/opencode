@@ -36,18 +36,21 @@ export type DryRunReport = {
   }
 }
 
-const descendantsWithArchivedAncestors = `
+const descendantsWithArchivedAncestors = (legacy: boolean) => {
+  const family = legacy ? "" : ", family_archive_id"
+  const familySelect = legacy ? "" : ", p.family_archive_id"
+  return `
   WITH RECURSIVE ancestors(
-    session_id, ancestor_id, time_archived, family_archive_id, parent_id, depth, path
+    session_id, ancestor_id, time_archived${family}, parent_id, depth, path
   ) AS (
     SELECT
-      s.id, p.id, p.time_archived, p.family_archive_id, p.parent_id,
+      s.id, p.id, p.time_archived${familySelect}, p.parent_id,
       1, ',' || p.id || ','
     FROM session s
     JOIN session p ON p.id = s.parent_id
     UNION ALL
     SELECT
-      a.session_id, p.id, p.time_archived, p.family_archive_id, p.parent_id,
+      a.session_id, p.id, p.time_archived${familySelect}, p.parent_id,
       a.depth + 1, a.path || p.id || ','
     FROM ancestors a
     JOIN session p ON p.id = a.parent_id
@@ -56,7 +59,7 @@ const descendantsWithArchivedAncestors = `
   ),
   nearest AS (
     SELECT
-      session_id, ancestor_id, time_archived, family_archive_id, depth,
+      session_id, ancestor_id, time_archived${family}, depth,
       ROW_NUMBER() OVER (
         PARTITION BY session_id
         ORDER BY depth, ancestor_id
@@ -65,17 +68,32 @@ const descendantsWithArchivedAncestors = `
     WHERE time_archived IS NOT NULL
   )
 `
+}
+
+const sessionHasFamilyArchiveID = (db: SQLiteDatabase) =>
+  db
+    .query<{ name: string }, []>("PRAGMA table_info(session)")
+    .all()
+    .some((column) => column.name === "family_archive_id")
 
 export function collectDryRun(db: SQLiteDatabase, path: string): DryRunReport {
+  const hasFamily = sessionHasFamilyArchiveID(db)
   const roots = db
     .query<{ id: string; time_archived: number }, []>(
-      `
-      SELECT id, time_archived
-      FROM session
-      WHERE time_archived IS NOT NULL
-        AND (family_archive_id IS NULL OR family_archive_id = id)
-      ORDER BY time_archived, id
-    `,
+      hasFamily
+        ? `
+          SELECT id, time_archived
+          FROM session
+          WHERE time_archived IS NOT NULL
+            AND (family_archive_id IS NULL OR family_archive_id = id)
+          ORDER BY time_archived, id
+        `
+        : `
+          SELECT id, time_archived
+          FROM session
+          WHERE time_archived IS NOT NULL
+          ORDER BY time_archived, id
+        `,
     )
     .all()
 
@@ -91,7 +109,7 @@ export function collectDryRun(db: SQLiteDatabase, path: string): DryRunReport {
       []
     >(
       `
-      ${descendantsWithArchivedAncestors}
+      ${descendantsWithArchivedAncestors(hasFamily === false)}
       SELECT
         s.id,
         n.ancestor_id AS root_id,
@@ -140,7 +158,7 @@ export function collectDryRun(db: SQLiteDatabase, path: string): DryRunReport {
 }
 
 export function dryRun(path: string): DryRunReport {
-  const db = new SQLiteDatabase(path, { readonly: true })
+  const db = new SQLiteDatabase(path, { readonly: true, create: false })
   try {
     return collectDryRun(db, path)
   } finally {
@@ -150,7 +168,11 @@ export function dryRun(path: string): DryRunReport {
 
 function parseDBPath(argv: string[]) {
   const index = argv.indexOf("--db")
-  if (index >= 0) return argv[index + 1]
+  if (index >= 0) {
+    const value = argv[index + 1]
+    if (!value || value.startsWith("--")) throw new Error("--db requires a database path")
+    return value
+  }
   return Database.path()
 }
 
