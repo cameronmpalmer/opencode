@@ -67,6 +67,10 @@ export const SessionTable = sqliteTable(
     idle_outcome: text().$type<NonNullable<Session.Info["outcome"]>>(),
     time_compacting: integer(),
     time_archived: integer(),
+    family_archive_id: text().$type<SessionSchema.ID>(),
+    archive_cause: text().$type<"user" | "cascade" | "migration">(),
+    archive_state: text(),
+    archive_state_at: integer(),
     /** The execution claim timestamp (historical column name; see SessionStore.claim). */
     time_suspended: integer(),
     resume_attempts: integer().notNull().default(0),
@@ -75,11 +79,46 @@ export const SessionTable = sqliteTable(
     index("session_v2_project_idx").on(table.project_id),
     index("session_v2_workspace_idx").on(table.workspace_id),
     index("session_v2_parent_idx").on(table.parent_id),
+    index("session_v2_family_archive_idx").on(table.family_archive_id),
+    index("session_v2_archive_state_idx").on(table.archive_state),
     index("session_v2_time_suspended_idx")
       .on(table.time_suspended)
       .where(sql`${table.time_suspended} is not null`),
   ],
 )
+
+// Family archive bookkeeping. The V1 database may already contain these tables
+// from the family branch, so their migration uses CREATE TABLE IF NOT EXISTS.
+export const FamilyArchiveMigrationTable = sqliteTable("family_archive_migration", {
+  root_session_id: text().$type<SessionSchema.ID>().primaryKey(),
+  root_archived_at: integer().notNull(),
+  applied_at: integer().notNull(),
+})
+
+export const SessionArchiveGuardTable = sqliteTable("session_archive_guard", {
+  session_id: text().$type<SessionSchema.ID>().primaryKey(),
+})
+
+export const SessionImportExemptTable = sqliteTable("session_import_exempt", {
+  session_id: text().$type<SessionSchema.ID>().primaryKey(),
+  expires_at: integer().notNull(),
+})
+
+export const SessionRunLeaseTable = sqliteTable(
+  "session_run_lease",
+  {
+    session_id: text().$type<SessionSchema.ID>().primaryKey(),
+    lease_id: text().notNull(),
+    heartbeat_at: integer().notNull(),
+    cancel_requested: integer().notNull().default(0),
+  },
+  (table) => [index("session_run_lease_heartbeat_idx").on(table.heartbeat_at)],
+)
+
+export const SessionPurgedTable = sqliteTable("session_purged", {
+  session_id: text().$type<SessionSchema.ID>().primaryKey(),
+  purged_at: integer().notNull(),
+})
 
 export const SessionMessageTable = sqliteTable(
   "session_message",

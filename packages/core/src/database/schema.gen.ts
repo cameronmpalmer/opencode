@@ -139,6 +139,13 @@ const schema: Omit<DatabaseMigration.Migration, "id"> = {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`family_archive_migration\` (
+          \`root_session_id\` text PRIMARY KEY,
+          \`root_archived_at\` integer NOT NULL,
+          \`applied_at\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`instruction_blob\` (
           \`hash\` text PRIMARY KEY,
           \`value\` text
@@ -167,6 +174,17 @@ const schema: Omit<DatabaseMigration.Migration, "id"> = {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`session_archive_guard\` (
+          \`session_id\` text PRIMARY KEY
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`session_import_exempt\` (
+          \`session_id\` text PRIMARY KEY,
+          \`expires_at\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`session_inbox\` (
           \`id\` text PRIMARY KEY,
           \`session_id\` text NOT NULL,
@@ -188,6 +206,20 @@ const schema: Omit<DatabaseMigration.Migration, "id"> = {
           \`time_updated\` integer NOT NULL,
           \`data\` text NOT NULL,
           CONSTRAINT \`fk_session_message_session_id_session_v2_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session_v2\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`session_purged\` (
+          \`session_id\` text PRIMARY KEY,
+          \`purged_at\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`session_run_lease\` (
+          \`session_id\` text PRIMARY KEY,
+          \`lease_id\` text NOT NULL,
+          \`heartbeat_at\` integer NOT NULL,
+          \`cancel_requested\` integer DEFAULT 0 NOT NULL
         );
       `)
       yield* tx.run(`
@@ -226,6 +258,10 @@ const schema: Omit<DatabaseMigration.Migration, "id"> = {
           \`idle_outcome\` text,
           \`time_compacting\` integer,
           \`time_archived\` integer,
+          \`family_archive_id\` text,
+          \`archive_cause\` text,
+          \`archive_state\` text,
+          \`archive_state_at\` integer,
           \`time_suspended\` integer,
           \`resume_attempts\` integer DEFAULT 0 NOT NULL,
           CONSTRAINT \`fk_session_v2_project_id_project_id_fk\` FOREIGN KEY (\`project_id\`) REFERENCES \`project\`(\`id\`) ON DELETE CASCADE
@@ -273,9 +309,12 @@ const schema: Omit<DatabaseMigration.Migration, "id"> = {
         `CREATE INDEX \`session_message_session_time_created_id_idx\` ON \`session_message\` (\`session_id\`,\`time_created\`,\`id\`);`,
       )
       yield* tx.run(`CREATE INDEX \`session_message_time_created_idx\` ON \`session_message\` (\`time_created\`);`)
+      yield* tx.run(`CREATE INDEX \`session_run_lease_heartbeat_idx\` ON \`session_run_lease\` (\`heartbeat_at\`);`)
       yield* tx.run(`CREATE INDEX \`session_v2_project_idx\` ON \`session_v2\` (\`project_id\`);`)
       yield* tx.run(`CREATE INDEX \`session_v2_workspace_idx\` ON \`session_v2\` (\`workspace_id\`);`)
       yield* tx.run(`CREATE INDEX \`session_v2_parent_idx\` ON \`session_v2\` (\`parent_id\`);`)
+      yield* tx.run(`CREATE INDEX \`session_v2_family_archive_idx\` ON \`session_v2\` (\`family_archive_id\`);`)
+      yield* tx.run(`CREATE INDEX \`session_v2_archive_state_idx\` ON \`session_v2\` (\`archive_state\`);`)
       yield* tx.run(
         `CREATE INDEX \`session_v2_time_suspended_idx\` ON \`session_v2\` (\`time_suspended\`) WHERE "session_v2"."time_suspended" is not null;`,
       )

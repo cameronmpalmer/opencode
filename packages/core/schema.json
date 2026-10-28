@@ -1,8 +1,8 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "44bd8ca5-689a-410e-a46a-958eb5accd97",
-  "prevIds": ["f1f14616-b6a1-483d-87b0-d5b7a9132580"],
+  "id": "fa47ae2b-11bc-46a0-bdb1-fb5da5bcbe85",
+  "prevIds": ["44bd8ca5-689a-410e-a46a-958eb5accd97"],
   "ddl": [
     {
       "name": "account_state",
@@ -53,6 +53,10 @@
       "entityType": "tables"
     },
     {
+      "name": "family_archive_migration",
+      "entityType": "tables"
+    },
+    {
       "name": "instruction_blob",
       "entityType": "tables"
     },
@@ -65,11 +69,27 @@
       "entityType": "tables"
     },
     {
+      "name": "session_archive_guard",
+      "entityType": "tables"
+    },
+    {
+      "name": "session_import_exempt",
+      "entityType": "tables"
+    },
+    {
       "name": "session_inbox",
       "entityType": "tables"
     },
     {
       "name": "session_message",
+      "entityType": "tables"
+    },
+    {
+      "name": "session_purged",
+      "entityType": "tables"
+    },
+    {
+      "name": "session_run_lease",
       "entityType": "tables"
     },
     {
@@ -860,6 +880,36 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
+      "name": "root_session_id",
+      "entityType": "columns",
+      "table": "family_archive_migration"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "root_archived_at",
+      "entityType": "columns",
+      "table": "family_archive_migration"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "applied_at",
+      "entityType": "columns",
+      "table": "family_archive_migration"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
       "name": "hash",
       "entityType": "columns",
       "table": "instruction_blob"
@@ -983,6 +1033,36 @@
       "name": "current_values",
       "entityType": "columns",
       "table": "instruction_state"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "session_archive_guard"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "session_import_exempt"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "expires_at",
+      "entityType": "columns",
+      "table": "session_import_exempt"
     },
     {
       "type": "text",
@@ -1123,6 +1203,66 @@
       "name": "data",
       "entityType": "columns",
       "table": "session_message"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "session_purged"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "purged_at",
+      "entityType": "columns",
+      "table": "session_purged"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "session_run_lease"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "lease_id",
+      "entityType": "columns",
+      "table": "session_run_lease"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "heartbeat_at",
+      "entityType": "columns",
+      "table": "session_run_lease"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "cancel_requested",
+      "entityType": "columns",
+      "table": "session_run_lease"
     },
     {
       "type": "text",
@@ -1461,6 +1601,46 @@
       "default": null,
       "generated": null,
       "name": "time_archived",
+      "entityType": "columns",
+      "table": "session_v2"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "family_archive_id",
+      "entityType": "columns",
+      "table": "session_v2"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "archive_cause",
+      "entityType": "columns",
+      "table": "session_v2"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "archive_state",
+      "entityType": "columns",
+      "table": "session_v2"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "archive_state_at",
       "entityType": "columns",
       "table": "session_v2"
     },
@@ -1805,6 +1985,13 @@
       "entityType": "pks"
     },
     {
+      "columns": ["root_session_id"],
+      "nameExplicit": false,
+      "name": "family_archive_migration_pk",
+      "table": "family_archive_migration",
+      "entityType": "pks"
+    },
+    {
       "columns": ["hash"],
       "nameExplicit": false,
       "name": "instruction_blob_pk",
@@ -1819,6 +2006,20 @@
       "entityType": "pks"
     },
     {
+      "columns": ["session_id"],
+      "nameExplicit": false,
+      "name": "session_archive_guard_pk",
+      "table": "session_archive_guard",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["session_id"],
+      "nameExplicit": false,
+      "name": "session_import_exempt_pk",
+      "table": "session_import_exempt",
+      "entityType": "pks"
+    },
+    {
       "columns": ["id"],
       "nameExplicit": false,
       "name": "session_inbox_pk",
@@ -1830,6 +2031,20 @@
       "nameExplicit": false,
       "name": "session_message_pk",
       "table": "session_message",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["session_id"],
+      "nameExplicit": false,
+      "name": "session_purged_pk",
+      "table": "session_purged",
+      "entityType": "pks"
+    },
+    {
+      "columns": ["session_id"],
+      "nameExplicit": false,
+      "name": "session_run_lease_pk",
+      "table": "session_run_lease",
       "entityType": "pks"
     },
     {
@@ -2059,6 +2274,20 @@
     {
       "columns": [
         {
+          "value": "heartbeat_at",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "session_run_lease_heartbeat_idx",
+      "entityType": "indexes",
+      "table": "session_run_lease"
+    },
+    {
+      "columns": [
+        {
           "value": "project_id",
           "isExpression": false
         }
@@ -2095,6 +2324,34 @@
       "where": null,
       "origin": "manual",
       "name": "session_v2_parent_idx",
+      "entityType": "indexes",
+      "table": "session_v2"
+    },
+    {
+      "columns": [
+        {
+          "value": "family_archive_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "session_v2_family_archive_idx",
+      "entityType": "indexes",
+      "table": "session_v2"
+    },
+    {
+      "columns": [
+        {
+          "value": "archive_state",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "session_v2_archive_state_idx",
       "entityType": "indexes",
       "table": "session_v2"
     },

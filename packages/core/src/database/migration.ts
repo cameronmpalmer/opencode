@@ -15,6 +15,11 @@ export type Migration = {
   id: string
   foreignKeys?: boolean
   up: (tx: Transaction) => Effect.Effect<void, unknown, Global.Service>
+  /**
+   * Hand-written migrations that are not represented in the generated schema
+   * (for example triggers) must opt in so fresh databases run them too.
+   */
+  runsOnFreshSchema?: boolean
 }
 
 // Not serialized here: the Database layer holds a lock scoped to the database
@@ -34,6 +39,10 @@ export function apply(db: Database) {
     yield* db.transaction((tx) =>
       Effect.gen(function* () {
         yield* schema.up(tx)
+        yield* Effect.forEach(
+          migrations.filter((migration) => migration.runsOnFreshSchema),
+          (migration) => migration.up(tx),
+        )
         yield* tx.run(
           sql`CREATE TABLE ${sql.identifier("migration")} (id TEXT PRIMARY KEY, time_completed INTEGER NOT NULL)`,
         )

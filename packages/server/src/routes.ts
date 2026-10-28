@@ -1,5 +1,6 @@
 import { Database } from "@opencode/core/database/database"
 import { V1Migration } from "@opencode/core/database/v1-migration"
+import { FamilyArchiveBackfill } from "@opencode/core/database/family-archive-backfill"
 import { App } from "@opencode/core/app"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Node } from "@opencode/util/effect/app-node"
@@ -192,7 +193,11 @@ function makeRoutes<AuthError, AuthServices>(
         Layer.provideMerge(services),
         Layer.provideMerge(HttpRouter.layer),
       )
-      return Layer.merge(api, V1Migration.layer.pipe(Layer.provide(services)))
+      return Layer.mergeAll(
+        api,
+        V1Migration.layer.pipe(Layer.provide(services)),
+        FamilyArchiveBackfill.layer.pipe(Layer.provide(services)),
+      )
     }),
   )
 }
