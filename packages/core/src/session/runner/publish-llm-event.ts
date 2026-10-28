@@ -582,6 +582,22 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
         }
         return
       case "finish":
+        // Some OpenAI-compatible providers report usage only on the final finish event.
+        if (stepSettlement === undefined) {
+          stepSettlement = {
+            finish: event.reason.normalized,
+            rawFinish: event.reason.raw,
+            native: native(event.providerMetadata),
+            usage: event.usage,
+          }
+          if (event.reason.normalized === "content-filter") {
+            providerFailed = true
+            yield* failAssistant(contentFilterError("Provider blocked the response", event.reason))
+          }
+          return
+        }
+        if (stepSettlement.usage === undefined && event.usage !== undefined)
+          stepSettlement = { ...stepSettlement, usage: event.usage }
         return
       case "provider-error":
         providerFailed = true
