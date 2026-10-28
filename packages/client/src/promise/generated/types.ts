@@ -2186,6 +2186,10 @@ export type SessionInfo = {
   metadata?: SessionMetadata
   permissions?: PermissionRuleset
   revert?: SessionRevert
+  familyArchiveID?: SessionID | null
+  archiveCause?: "user" | "cascade" | "migration" | null
+  archiveState?: "archiving" | null
+  archiveStateAt?: number | null
   location: LocationPublicRef
 }
 
@@ -3208,6 +3212,10 @@ export type SessionImportInput = {
         readonly more?: true
       }>
     }
+    readonly familyArchiveID?: string | null
+    readonly archiveCause?: "user" | "cascade" | "migration" | null
+    readonly archiveState?: "archiving" | null
+    readonly archiveStateAt?: number | null
     readonly location: { readonly directory: string }
   }
   readonly messages: ReadonlyArray<JsonValue>

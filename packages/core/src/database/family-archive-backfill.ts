@@ -27,6 +27,10 @@ export function run(): Effect.Effect<void, unknown, Database.Service> {
     if (!FAMILY_COLUMNS.every((column) => columns.has(column))) return
     yield* db.transaction((tx) =>
       Effect.gen(function* () {
+        // Phase 4.3 adds the archive guard trigger on session_v2. This UPDATE
+        // changes archive fields, so that trigger will require a
+        // session_archive_guard row (or an import exemption) for every affected
+        // session. Add the guard insert here when the trigger lands.
         yield* tx.run(sql`
           UPDATE session_v2
           SET
@@ -72,22 +76,34 @@ export function run(): Effect.Effect<void, unknown, Database.Service> {
 }
 
 // Wait for the V1 import to finish before copying. A failed import leaves the
-// backfill pending; the next startup retries both.
-const waitForMigration = Effect.gen(function* () {
-  while (true) {
-    const status = yield* V1Migration.status()
-    if (status.status === "completed") return
-    if (status.status === "error") {
-      return yield* Effect.logWarning("Skipped family archive backfill because the V1 migration failed")
+// backfill pending; the next startup retries both. Returns false when the
+// import failed so the caller does not copy a partial import.
+export const waitForMigration = (
+  status: Effect.Effect<V1Migration.Status, never, Database.Service> = V1Migration.status(),
+): Effect.Effect<boolean, never, Database.Service> =>
+  Effect.gen(function* () {
+    while (true) {
+      const current = yield* status
+      if (current.status === "completed") return true
+      if (current.status === "error") {
+        yield* Effect.logWarning("Skipped family archive backfill because the V1 migration failed")
+        return false
+      }
+      yield* Effect.sleep("1 second")
     }
-    yield* Effect.sleep("1 second")
-  }
-})
+  })
+
+export const runAfterMigration = (
+  status: Effect.Effect<V1Migration.Status, never, Database.Service> = V1Migration.status(),
+): Effect.Effect<void, unknown, Database.Service> =>
+  Effect.gen(function* () {
+    if (!(yield* waitForMigration(status))) return
+    yield* run()
+  })
 
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
-    yield* waitForMigration.pipe(
-      Effect.andThen(run()),
+    yield* runAfterMigration().pipe(
       Effect.catchCause((cause) => Effect.logWarning("Family archive backfill failed", { cause })),
       Effect.forkScoped({ startImmediately: true }),
     )

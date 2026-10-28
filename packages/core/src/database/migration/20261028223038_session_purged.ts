@@ -18,14 +18,6 @@ export default {
   runsOnFreshSchema: true,
   up(tx) {
     return Effect.gen(function* () {
-      // The generated schema also knows this table, so a fresh install may have
-      // created it before the hand-written migrations run.
-      yield* tx.run(`
-        CREATE TABLE IF NOT EXISTS \`session_purged\` (
-          \`session_id\` text PRIMARY KEY,
-          \`purged_at\` integer NOT NULL
-        );
-      `)
       yield* tx.run(`
         CREATE TRIGGER IF NOT EXISTS \`session_v2_purged_parent_insert\`
         BEFORE INSERT ON \`session_v2\`

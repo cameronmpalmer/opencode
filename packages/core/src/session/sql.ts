@@ -69,7 +69,7 @@ export const SessionTable = sqliteTable(
     time_archived: integer(),
     family_archive_id: text().$type<SessionSchema.ID>(),
     archive_cause: text().$type<"user" | "cascade" | "migration">(),
-    archive_state: text(),
+    archive_state: text().$type<"archiving">(),
     archive_state_at: integer(),
     /** The execution claim timestamp (historical column name; see SessionStore.claim). */
     time_suspended: integer(),

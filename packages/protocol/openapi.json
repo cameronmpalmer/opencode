@@ -21011,6 +21011,48 @@
           "revert": {
             "$ref": "#/components/schemas/Session.Revert"
           },
+          "familyArchiveID": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Session.ID"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveCause": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["user", "cascade", "migration"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveState": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": ["archiving"]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "archiveStateAt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "location": {
             "$ref": "#/components/schemas/Location.PublicRef"
           }

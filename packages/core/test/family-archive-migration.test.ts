@@ -165,7 +165,7 @@ describe("family archive migration", () => {
     )
   })
 
-  test("rejects a child insert under a purged session on session_v2", async () => {
+  test("rejects a child insert or move under a purged session on session_v2", async () => {
     await database(
       Effect.gen(function* () {
         const { db } = yield* Database.Service
@@ -179,6 +179,93 @@ describe("family archive migration", () => {
             VALUES ('ses_late', 'global', 'late', '/tmp/test', '1', 'ses_purged', 1, 1)
           `),
         )
+
+        yield* db
+          .run(
+            sql`
+            INSERT INTO session_v2 (id, project_id, slug, directory, version, time_created, time_updated)
+            VALUES ('ses_child', 'global', 'child', '/tmp/test', '1', 1, 1)
+          `,
+          )
+          .pipe(Effect.orDie)
+        yield* expectAbort(db.run(sql`UPDATE session_v2 SET parent_id = 'ses_purged' WHERE id = 'ses_child'`))
+      }),
+    )
+  })
+
+  test("does not run the backfill when the V1 migration failed", async () => {
+    await database(
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        yield* addLegacySession(db, "ses_family")
+        expect(yield* V1Migration.run()).toEqual({ status: "completed" })
+
+        expect(yield* FamilyArchiveBackfill.waitForMigration(Effect.succeed({ status: "completed" } as const))).toBe(
+          true,
+        )
+        expect(
+          yield* FamilyArchiveBackfill.waitForMigration(
+            Effect.succeed({ status: "error", error: "V1 migration failed" } as const),
+          ),
+        ).toBe(false)
+
+        yield* FamilyArchiveBackfill.runAfterMigration(
+          Effect.succeed({ status: "error", error: "V1 migration failed" } as const),
+        )
+
+        expect(
+          yield* db.get(sql`
+            SELECT family_archive_id, archive_cause, archive_state, archive_state_at
+            FROM session_v2 WHERE id = 'ses_family'
+          `),
+        ).toEqual({
+          family_archive_id: null,
+          archive_cause: null,
+          archive_state: null,
+          archive_state_at: null,
+        })
+      }),
+    )
+  })
+
+  test("does not overwrite newer family metadata already on session_v2", async () => {
+    await database(
+      Effect.gen(function* () {
+        const { db } = yield* Database.Service
+        yield* addLegacySession(db, "ses_family")
+        expect(yield* V1Migration.run()).toEqual({ status: "completed" })
+        yield* db
+          .run(sql`UPDATE session_v2 SET family_archive_id = 'ses_newer_root' WHERE id = 'ses_family'`)
+          .pipe(Effect.orDie)
+
+        yield* FamilyArchiveBackfill.run()
+
+        expect(yield* db.get(sql`SELECT family_archive_id FROM session_v2 WHERE id = 'ses_family'`)).toEqual({
+          family_archive_id: "ses_newer_root",
+        })
+      }),
+    )
+  })
+
+  test("is a no-op on a fresh V2 database without a legacy session table", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+        yield* FamilyArchiveBackfill.run().pipe(Effect.provideService(Database.Service, { db }))
+        expect(yield* db.get(sql`SELECT COUNT(*) AS count FROM family_archive_migration`)).toEqual({ count: 0 })
+      }),
+    )
+  })
+
+  test("is a no-op when the legacy session table has no family columns", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* DatabaseMigration.apply(db)
+        yield* db.run(sql`CREATE TABLE session (id text PRIMARY KEY)`)
+        yield* FamilyArchiveBackfill.run().pipe(Effect.provideService(Database.Service, { db }))
+        expect(yield* db.get(sql`SELECT COUNT(*) AS count FROM family_archive_migration`)).toEqual({ count: 0 })
       }),
     )
   })

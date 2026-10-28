@@ -57,10 +57,10 @@ export const Info = Schema.Struct({
   /** Evaluated after the agent's rules; the last matching rule wins. */
   permissions: Permission.Ruleset.pipe(optional),
   revert: Revert.pipe(optional),
-  familyArchiveID: ID.pipe(optional),
-  archiveCause: Schema.Literals(["user", "cascade", "migration"]).pipe(optional),
-  archiveState: Schema.String.pipe(optional),
-  archiveStateAt: Schema.Number.pipe(optional),
+  familyArchiveID: Schema.NullOr(ID).pipe(optional),
+  archiveCause: Schema.NullOr(Schema.Literals(["user", "cascade", "migration"])).pipe(optional),
+  archiveState: Schema.NullOr(Schema.Literal("archiving")).pipe(optional),
+  archiveStateAt: Schema.NullOr(Schema.Finite).pipe(optional),
 }).annotate({ identifier: "Session.Info" })
 
 export const ListAnchor = Schema.Struct({
