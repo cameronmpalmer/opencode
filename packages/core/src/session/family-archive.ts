@@ -196,3 +196,21 @@ export function isDirectFamilyMember(row: SessionRow) {
     row.family_archive_id !== row.id
   )
 }
+
+/**
+ * V1 performed the guard insert, event publication, and guard delete in one
+ * transaction. V2 publishes each event through the bus in its own transaction,
+ * so a crash can leave a guard row and an "archiving" marker behind. No archive
+ * operation can be in progress at startup, so sweep both before the guard
+ * trigger lands.
+ */
+export function reconcileStaleArchiveState(db: Db): Effect.Effect<void, unknown> {
+  return db.transaction((tx) =>
+    Effect.gen(function* () {
+      yield* tx.run(sql`DELETE FROM session_archive_guard`)
+      yield* tx.run(
+        sql`UPDATE session_v2 SET archive_state = NULL, archive_state_at = NULL WHERE archive_state = 'archiving'`,
+      )
+    }),
+  )
+}

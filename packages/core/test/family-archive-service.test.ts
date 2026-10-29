@@ -7,6 +7,7 @@ import { ProjectTable } from "@opencode/core/project/sql"
 import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import { SessionExecution } from "@opencode/core/session/execution"
+import { reconcileStaleArchiveState } from "@opencode/core/session/family-archive"
 import { SessionProjector } from "@opencode/core/session/projector"
 import {
   FamilyArchiveMigrationTable,
@@ -16,7 +17,7 @@ import {
 } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { LayerNode } from "@opencode/util/effect/layer-node"
-import { Effect } from "effect"
+import { Cause, Effect, Exit, Fiber } from "effect"
 import { eq } from "drizzle-orm"
 import { testEffect } from "./lib/effect"
 import { globalProjectNode } from "./lib/project"
@@ -291,6 +292,79 @@ describe("family archive service", () => {
       expect(rows.every((entry) => entry.archive_state === null)).toBe(true)
       const lease = yield* db.select().from(SessionRunLeaseTable).get()
       expect(lease?.cancel_requested).toBe(0)
+    }),
+  )
+
+  it.live("marks a fully archived family while the cancellation path runs", () =>
+    Effect.gen(function* () {
+      const session = yield* Session.Service
+      const db = yield* seed
+      const root = Session.ID.make("ses_fully_root")
+      const child = Session.ID.make("ses_fully_child")
+      yield* addSession(db, root, { time_archived: 100, family_archive_id: root, archive_cause: "user" })
+      yield* addSession(db, child, {
+        parent_id: root,
+        time_archived: 100,
+        family_archive_id: root,
+        archive_cause: "cascade",
+      })
+      yield* addLease(db, child, Date.now())
+
+      const first = yield* session
+        .archiveSubtree(root, { waitTimeoutMs: 300 })
+        .pipe(Effect.exit, Effect.forkScoped({ startImmediately: true }))
+      yield* Effect.sleep("50 millis")
+
+      const marked = yield* db.select().from(SessionTable).all()
+      expect(marked.every((entry) => entry.archive_state === "archiving")).toBe(true)
+
+      const concurrent = yield* Effect.flip(session.archiveSubtree(root))
+      expect(concurrent).toBeInstanceOf(Session.ArchiveInProgressError)
+      expect(concurrent).toMatchObject({ sessionID: root })
+
+      const exit = yield* Fiber.join(first)
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Session.ArchiveBlockedError)
+
+      const cleared = yield* db.select().from(SessionTable).all()
+      expect(cleared.every((entry) => entry.archive_state === null)).toBe(true)
+      expect(yield* guardCount(db)).toBe(0)
+    }),
+  )
+
+  it.live("removes an orphan migration snapshot when the attempt fails", () =>
+    Effect.gen(function* () {
+      const session = yield* Session.Service
+      const db = yield* seed
+      const root = Session.ID.make("ses_orphan_root")
+      const child = Session.ID.make("ses_orphan_child")
+      yield* addSession(db, root)
+      yield* addSession(db, child, { parent_id: root })
+      // Simulate a prior attempt that inserted the snapshot before failing.
+      yield* db
+        .insert(FamilyArchiveMigrationTable)
+        .values({ root_session_id: root, root_archived_at: 123, applied_at: 123 })
+        .run()
+        .pipe(Effect.orDie)
+      yield* addLease(db, child, Date.now())
+
+      const error = yield* Effect.flip(session.archiveSubtree(root, { waitTimeoutMs: 10 }))
+      expect(error).toBeInstanceOf(Session.ArchiveBlockedError)
+      expect(yield* migrationRows(db)).toEqual([])
+    }),
+  )
+
+  it.effect("reconciles stale guards and archiving markers", () =>
+    Effect.gen(function* () {
+      const db = yield* seed
+      const root = Session.ID.make("ses_stale_root")
+      yield* addSession(db, root, { archive_state: "archiving", archive_state_at: 123 })
+      yield* db.insert(SessionArchiveGuardTable).values({ session_id: root }).run().pipe(Effect.orDie)
+
+      yield* reconcileStaleArchiveState(db)
+
+      expect(yield* guardCount(db)).toBe(0)
+      expect(yield* row(db, root)).toMatchObject({ archive_state: null, archive_state_at: null })
     }),
   )
 })

@@ -4,6 +4,7 @@ import { sql } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import { Database } from "./database.js"
 import { V1Migration } from "./v1-migration.js"
+import { reconcileStaleArchiveState } from "../session/family-archive.js"
 
 // The V1 import copies time_archived but not the family archive fields. This
 // backfill runs after the import reaches phase "completed" so the legacy
@@ -103,7 +104,13 @@ export const runAfterMigration = (
 
 export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
-    yield* runAfterMigration().pipe(
+    yield* Effect.gen(function* () {
+      const db = (yield* Database.Service).db
+      yield* reconcileStaleArchiveState(db).pipe(
+        Effect.catchCause((cause) => Effect.logWarning("Family archive startup reconciliation failed", { cause })),
+      )
+      yield* runAfterMigration()
+    }).pipe(
       Effect.catchCause((cause) => Effect.logWarning("Family archive backfill failed", { cause })),
       Effect.forkScoped({ startImmediately: true }),
     )

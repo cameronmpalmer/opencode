@@ -154,7 +154,12 @@ export const make = Effect.fn("Session.make")(function* () {
         }),
       )
       .pipe(Effect.orDie)
-  const clearArchive = (ids: SessionSchema.ID[], leases: (typeof SessionRunLeaseTable.$inferSelect)[]) =>
+  const clearArchive = (
+    ids: SessionSchema.ID[],
+    leases: (typeof SessionRunLeaseTable.$inferSelect)[],
+    rootID: SessionSchema.ID,
+    rootWasArchived: boolean,
+  ) =>
     database.db
       .transaction((tx) =>
         Effect.gen(function* () {
@@ -168,6 +173,12 @@ export const make = Effect.fn("Session.make")(function* () {
               .run()
           }
           yield* tx.delete(SessionArchiveGuardTable).where(inArray(SessionArchiveGuardTable.session_id, ids)).run()
+          if (!rootWasArchived) {
+            yield* tx
+              .delete(FamilyArchiveMigrationTable)
+              .where(eq(FamilyArchiveMigrationTable.root_session_id, rootID))
+              .run()
+          }
           for (const lease of leases) {
             yield* tx
               .update(SessionRunLeaseTable)
@@ -262,11 +273,12 @@ export const make = Effect.fn("Session.make")(function* () {
       }
     }
 
-    const marked = allArchived ? [] : rows.filter((row) => row.time_archived === null).map((row) => row.id)
+    const marked = allArchived ? ids : rows.filter((row) => row.time_archived === null).map((row) => row.id)
     const cancelled = new Set<SessionSchema.ID>(leases.map((lease) => lease.session_id))
     for (const id of ids) {
       if (yield* execution.isActive(id)) cancelled.add(id)
     }
+    const rootWasArchived = root.time_archived !== null
 
     const work = Effect.gen(function* () {
       yield* beginArchive(ids, marked, now)
@@ -366,7 +378,7 @@ export const make = Effect.fn("Session.make")(function* () {
         Exit.isSuccess(exit)
           ? Effect.void
           : Effect.uninterruptible(
-              clearArchive(ids, leases).pipe(
+              clearArchive(ids, leases, root.id, rootWasArchived).pipe(
                 Effect.catchCause((cause) => Effect.logError("family archive cleanup failed", { cause })),
               ),
             ),
