@@ -22,6 +22,7 @@ import {
   InvalidArchiveTimeError,
   NotFoundError,
   PromptConflictError,
+  SessionArchivedError,
   SyntheticConflictError,
 } from "./error.js"
 import { SessionEvent } from "./event.js"
@@ -61,6 +62,10 @@ export const make = Effect.fn("Session.make")(function* () {
     if (!session) return yield* new NotFoundError({ sessionID })
     return session
   })
+  const assertWritable = (session: SessionSchema.Info) =>
+    session.time.archived !== undefined || session.archiveState === "archiving"
+      ? Effect.die(new SessionArchivedError({ sessionID: session.id, message: `Session ${session.id} is archived` }))
+      : Effect.void
   const message = Effect.fn("Session.message")(function* (sessionID: SessionSchema.ID, messageID: SessionMessage.ID) {
     const stored = yield* store.message(messageID)
     return stored?.sessionID === sessionID ? stored.message : undefined
@@ -516,6 +521,7 @@ export const make = Effect.fn("Session.make")(function* () {
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const session = yield* get(sessionID)
+        yield* assertWritable(session)
         const messageID = input.id ?? SessionMessage.ID.create()
         const admitted = yield* Effect.gen(function* () {
           const existing = yield* admission.reconcile({
@@ -554,6 +560,7 @@ export const make = Effect.fn("Session.make")(function* () {
     input: { id?: SessionMessage.ID; command: string },
   ) {
     const session = yield* get(sessionID)
+    yield* assertWritable(session)
     // The server owns completion recording even if the submitting client disconnects.
     const running = yield* Effect.gen(function* () {
       const started = yield* SessionShell.start({ session, command: input.command }).pipe(
@@ -598,6 +605,7 @@ export const make = Effect.fn("Session.make")(function* () {
     input: { messageID?: SessionMessage.ID; skill: Skill.ID; resume?: boolean },
   ) {
     const session = yield* get(sessionID)
+    yield* assertWritable(session)
     const skill = yield* SessionSkill.get({ session, skill: input.skill }).pipe(
       Effect.provideService(Instance.Service, instances),
     )
@@ -621,6 +629,7 @@ export const make = Effect.fn("Session.make")(function* () {
     input: { id?: SessionMessage.ID; delivery?: SessionInbox.Delivery },
   ) {
     const session = yield* get(sessionID)
+    yield* assertWritable(session)
     if (session.revert) yield* SessionRevert.commit(bus, session)
     const inputID = input.id ?? SessionMessage.ID.create()
     const admitted = yield* admission

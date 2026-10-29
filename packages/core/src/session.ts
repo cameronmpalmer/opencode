@@ -42,6 +42,7 @@ import {
   MessageNotFoundError,
   NotFoundError,
   PromptConflictError,
+  SessionArchivedError,
   SkillNotFoundError,
   SyntheticConflictError,
 } from "./session/error.js"
@@ -49,6 +50,7 @@ import { Node } from "@opencode/util/effect/app-node"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { SessionEvent } from "./session/event.js"
 import type { ArchivePreview, ArchiveResult, UnarchiveResult } from "./session/family-archive.js"
+import { archivedAncestor } from "./session/family-archive.js"
 import { SessionInbox } from "./session/inbox.js"
 import { InstructionState } from "./session/instruction-state.js"
 import { SessionGenerate } from "./session/generate.js"
@@ -326,6 +328,17 @@ const layer = Layer.effect(
         if (recorded) return recorded
         const parent = input.parentID ? yield* store.get(input.parentID) : undefined
         if (input.parentID && parent === undefined) return yield* new NotFoundError({ sessionID: input.parentID })
+        if (input.parentID && parent) {
+          const blocked = yield* archivedAncestor(db, input.parentID)
+          if (blocked.length > 0) {
+            return yield* Effect.die(
+              new SessionArchivedError({
+                sessionID,
+                message: `Cannot create session ${sessionID} under archived session ${blocked[0]!.id}`,
+              }),
+            )
+          }
+        }
         const location = parent?.location ?? (input.location && LocationServiceMap.canonical(input.location))
         if (location === undefined)
           return yield* Effect.die(new Error("Session.create requires either location or an existing parentID"))

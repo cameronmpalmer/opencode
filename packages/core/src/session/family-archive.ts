@@ -187,6 +187,28 @@ export function liveLeases(db: Db, ids: SessionSchema.ID[]) {
     .pipe(Effect.orDie)
 }
 
+/**
+ * Return the nearest archived or archiving ancestor of `sessionID`, including
+ * the session itself. Used to block creating a child under an archived family.
+ */
+export const archivedAncestor = (db: Db, sessionID: SessionSchema.ID) =>
+  db
+    .all<{ id: SessionSchema.ID }>(sql`
+      WITH RECURSIVE ancestors(id, parent_id, time_archived, archive_state) AS (
+        SELECT s.id, s.parent_id, s.time_archived, s.archive_state
+        FROM session_v2 s
+        WHERE s.id = ${sessionID}
+        UNION
+        SELECT p.id, p.parent_id, p.time_archived, p.archive_state
+        FROM session_v2 p
+        JOIN ancestors a ON p.id = a.parent_id
+      )
+      SELECT id FROM ancestors
+      WHERE time_archived IS NOT NULL OR archive_state = 'archiving'
+      LIMIT 1
+    `)
+    .pipe(Effect.orDie)
+
 export function isDirectFamilyMember(row: SessionRow) {
   return (
     row.time_archived !== null &&
