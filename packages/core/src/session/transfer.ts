@@ -20,7 +20,7 @@ import { Slug } from "../util/slug.js"
 import { SessionEvent } from "./event.js"
 import { SessionMessage } from "./message.js"
 import { SessionProjector } from "./projector.js"
-import { SessionImportExemptTable, SessionMessageTable, SessionTable } from "./sql.js"
+import { SessionImportExemptTable, SessionMessageTable, SessionPurgedTable, SessionTable } from "./sql.js"
 
 export const Data = SessionTransfer.Data
 export type Data = SessionTransfer.Data
@@ -87,8 +87,13 @@ const layer = Layer.effect(
           }
         })
         yield* db
+          .delete(SessionPurgedTable)
+          .where(eq(SessionPurgedTable.session_id, sessionID))
+          .run()
+          .pipe(Effect.orDie)
+        yield* db
           .insert(SessionImportExemptTable)
-          .values({ session_id: sessionID, expires_at: Date.now() + 60_000 })
+          .values({ session_id: sessionID, expires_at: Date.now() + 30 * 60_000 })
           .onConflictDoNothing()
           .run()
           .pipe(Effect.orDie)

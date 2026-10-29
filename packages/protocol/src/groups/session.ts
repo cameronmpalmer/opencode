@@ -274,7 +274,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         params: { sessionID: Session.ID },
         payload: Schema.Struct({ agent: Agent.ID }),
         success: HttpApiSchema.NoContent,
-        error: SessionNotFoundError,
+        error: [SessionNotFoundError, ConflictError],
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "session.switchAgent",
@@ -288,7 +288,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         params: { sessionID: Session.ID },
         payload: Schema.Struct({ model: Model.Ref }),
         success: HttpApiSchema.NoContent,
-        error: SessionNotFoundError,
+        error: [SessionNotFoundError, ConflictError],
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "session.switchModel",
@@ -518,7 +518,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
         params: { sessionID: Session.ID },
         payload: Schema.Struct({ messageID: SessionMessage.ID, files: Schema.Boolean.pipe(Schema.optional) }),
         success: Schema.Struct({ data: Session.Revert }),
-        error: [MessageNotFoundError, SessionNotFoundError, SessionBusyError, UnknownError],
+        error: [MessageNotFoundError, SessionNotFoundError, SessionBusyError, UnknownError, ConflictError],
       })
         .middleware(sessionLocationMiddleware)
         .annotateMerge(
@@ -533,7 +533,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
       HttpApiEndpoint.delete("session.revert.clear", "/api/session/:sessionID/revert", {
         params: { sessionID: Session.ID },
         success: HttpApiSchema.NoContent,
-        error: [SessionNotFoundError, SessionBusyError, UnknownError],
+        error: [SessionNotFoundError, SessionBusyError, UnknownError, ConflictError],
       })
         .middleware(sessionLocationMiddleware)
         .annotateMerge(OpenApi.annotations({ identifier: "session.revert.clear", summary: "Clear staged revert" })),
@@ -542,7 +542,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
       HttpApiEndpoint.post("session.revert.commit", "/api/session/:sessionID/revert/commit", {
         params: { sessionID: Session.ID },
         success: HttpApiSchema.NoContent,
-        error: [SessionNotFoundError, SessionBusyError],
+        error: [SessionNotFoundError, SessionBusyError, ConflictError],
       }).annotateMerge(OpenApi.annotations({ identifier: "session.revert.commit", summary: "Commit staged revert" })),
     )
     .add(

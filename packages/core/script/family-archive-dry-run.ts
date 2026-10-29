@@ -1,8 +1,6 @@
 #!/usr/bin/env bun
 
 import { Database as SQLiteDatabase } from "bun:sqlite"
-import os from "node:os"
-import path from "node:path"
 
 /**
  * Read-only preview of the family archive backfill. Opens the database with
@@ -174,7 +172,7 @@ function parseDBPath(argv: string[]) {
     if (!value || value.startsWith("--")) throw new Error("--db requires a database path")
     return value
   }
-  return process.env.OPENCODE_DB ?? path.join(os.homedir(), ".local", "share", "opencode", "opencode.db")
+  throw new Error("--db is required; refusing to target the live database")
 }
 
 if (import.meta.main) {

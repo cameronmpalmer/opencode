@@ -670,9 +670,10 @@ export function run(
                   })
                   .onConflictDoNothing()
                   .run()
+              yield* tx.run(sql`DELETE FROM session_purged WHERE session_id = ${nextID.id}`)
               yield* tx.run(sql`
                 INSERT OR IGNORE INTO session_import_exempt (session_id, expires_at)
-                VALUES (${nextID.id}, ${Date.now() + 60_000})
+                VALUES (${nextID.id}, ${Date.now() + 30 * 60_000})
               `)
               yield* tx.run(sql`
                   INSERT OR IGNORE INTO session_v2 (
@@ -887,9 +888,10 @@ function importNextDatabase(
                 .get()
               if (existing) return
               // Import is the one writer allowed past the archive triggers.
+              yield* tx.run(sql`DELETE FROM session_purged WHERE session_id = ${session.id}`)
               yield* tx.run(sql`
                 INSERT OR IGNORE INTO session_import_exempt (session_id, expires_at)
-                VALUES (${session.id}, ${Date.now() + 60_000})
+                VALUES (${session.id}, ${Date.now() + 30 * 60_000})
               `)
               yield* tx.run(sql`
                 INSERT INTO session_v2 (

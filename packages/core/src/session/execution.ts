@@ -121,23 +121,14 @@ export const layer = Layer.effect(
     >({
       started: (sessionID) =>
         Effect.gen(function* () {
-          const leaseID = yield* SessionRunLease.acquire(db, sessionID).pipe(
-            Effect.catch((error) =>
-              Effect.gen(function* () {
-                yield* Effect.logWarning("Failed to acquire session run lease", { sessionID, cause: error })
-                return undefined as string | undefined
-              }),
-            ),
-          )
-          if (leaseID !== undefined) {
-            const heartbeat = yield* SessionRunLease.heartbeatLoop(db, sessionID, leaseID).pipe(
-              Effect.forkIn(scope),
-            )
-            const cancel = yield* SessionRunLease.cancelPollLoop(db, sessionID, leaseID, () =>
-              coordinator?.interrupt(sessionID, "user") ?? Effect.succeed(false),
-            ).pipe(Effect.forkIn(scope))
-            leases.set(sessionID, { leaseID, heartbeat, cancel })
-          }
+          // A failed acquire means the session is archived or another process
+          // owns a live lease. Stop the run instead of running without a lease.
+          const leaseID = yield* SessionRunLease.acquire(db, sessionID).pipe(Effect.orDie)
+          const heartbeat = yield* SessionRunLease.heartbeatLoop(db, sessionID, leaseID).pipe(Effect.forkIn(scope))
+          const cancel = yield* SessionRunLease.cancelPollLoop(db, sessionID, leaseID, () =>
+            coordinator?.interrupt(sessionID, "user") ?? Effect.succeed(false),
+          ).pipe(Effect.forkIn(scope))
+          leases.set(sessionID, { leaseID, heartbeat, cancel })
           yield* reportLifecycle(
             sessionID,
             bus.publish(SessionEvent.Execution.Started, { sessionID }, claimOnCommit(sessionID)),

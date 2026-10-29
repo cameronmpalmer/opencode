@@ -540,6 +540,8 @@ const layer = Layer.effectDiscard(
             directory: SessionTable.directory,
             projectID: SessionTable.project_id,
             canonical: ProjectTable.worktree,
+            timeArchived: SessionTable.time_archived,
+            archiveState: SessionTable.archive_state,
           })
           .from(SessionTable)
           .innerJoin(ProjectTable, eq(SessionTable.project_id, ProjectTable.id))
@@ -558,6 +560,17 @@ const layer = Layer.effectDiscard(
           )
           .all()
           .pipe(Effect.orDie)
+        // Archived rows reject non-archive updates. Relocate them under a
+        // short-lived import exemption so project resolution keeps working.
+        const exempt = rows.filter((row) => row.timeArchived !== null || row.archiveState === "archiving")
+        const expiresAt = Date.now() + 30 * 60_000
+        for (const row of exempt) {
+          yield* db
+            .run(
+              sql`INSERT INTO session_import_exempt (session_id, expires_at) VALUES (${row.id}, ${expiresAt}) ON CONFLICT(session_id) DO UPDATE SET expires_at = excluded.expires_at`,
+            )
+            .pipe(Effect.orDie)
+        }
         yield* Effect.forEach(
           rows,
           (row) => {
@@ -579,6 +592,9 @@ const layer = Layer.effectDiscard(
           },
           { discard: true },
         )
+        for (const row of exempt) {
+          yield* db.run(sql`DELETE FROM session_import_exempt WHERE session_id = ${row.id}`).pipe(Effect.orDie)
+        }
       }),
     )
     yield* bus.project(SessionEvent.Deleted, (event) =>

@@ -438,6 +438,9 @@ const layer = Layer.effect(
         yield* execution.interrupt(sessionID)
         yield* execution.awaitIdle(sessionID)
         yield* transport.close(sessionID)
+        // Children are deleted one by one; a child admitted during this loop can
+        // survive until the parent tombstone lands. The exporter's purge path is
+        // the atomic alternative; this is a best-effort user delete.
         const children = yield* store.list({ parentID: sessionID })
         yield* Effect.forEach(children, (child) => result.remove(child.id), { concurrency: 1, discard: true })
         yield* environments.clear(sessionID)

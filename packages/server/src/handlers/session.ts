@@ -218,18 +218,22 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.switchAgent",
         Effect.fn(function* (ctx) {
-          yield* session
-            .switchAgent({ sessionID: ctx.params.sessionID, agent: ctx.payload.agent })
-            .pipe(Effect.catchTag("Session.NotFoundError", missingSession))
+          yield* mapArchivedDefect(
+            session
+              .switchAgent({ sessionID: ctx.params.sessionID, agent: ctx.payload.agent })
+              .pipe(Effect.catchTag("Session.NotFoundError", missingSession)),
+          )
           return HttpApiSchema.NoContent.make()
         }),
       )
       .handle(
         "session.switchModel",
         Effect.fn(function* (ctx) {
-          yield* session
-            .switchModel({ sessionID: ctx.params.sessionID, model: ctx.payload.model })
-            .pipe(Effect.catchTag("Session.NotFoundError", missingSession))
+          yield* mapArchivedDefect(
+            session
+              .switchModel({ sessionID: ctx.params.sessionID, model: ctx.payload.model })
+              .pipe(Effect.catchTag("Session.NotFoundError", missingSession)),
+          )
           return HttpApiSchema.NoContent.make()
         }),
       )
@@ -237,7 +241,7 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         "session.update",
         Effect.fn(function* (ctx) {
           const info = yield* requireSession(ctx.params.sessionID)
-          const archived = info.time.archived !== undefined
+          const archived = info.time.archived !== undefined || info.archiveState === "archiving"
           if (!archived) {
             if (ctx.payload.title !== undefined) {
               if (ctx.payload.title) {
@@ -469,8 +473,9 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
       .handle(
         "session.synthetic",
         Effect.fn(function* (ctx) {
-          const data = yield* session
-            .synthetic({
+          const data = yield* mapArchivedDefect(
+            session
+              .synthetic({
               id: ctx.payload.id,
               sessionID: ctx.params.sessionID,
               text: ctx.payload.text,
@@ -489,7 +494,8 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
                   }),
                 ),
               ),
-            )
+            ),
+          )
           return { data }
         }),
       )
@@ -542,15 +548,17 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
             files: ctx.payload.files,
           })
           return {
-            data: yield* session.revert
-              .stage({ ...ctx.params, ...ctx.payload })
-              .pipe(
+            data: yield* mapArchivedDefect(
+              session.revert
+                .stage({ ...ctx.params, ...ctx.payload })
+                .pipe(
                 Effect.catchTag("Session.NotFoundError", missingSession),
                 Effect.catchTag("Session.MessageNotFoundError", missingMessage),
                 Effect.catchTag("Session.BusyError", busySession),
                 Effect.catchTag("Snapshot.Error", failedSnapshot("stage session revert", ctx.params.sessionID)),
-                locationErrors,
-              ),
+                  locationErrors,
+                ),
+            ),
           }
         }),
       )
@@ -558,14 +566,16 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         "session.revert.clear",
         Effect.fn(function* (ctx) {
           yield* Effect.log("session.revert.clear", { sessionID: ctx.params.sessionID })
-          yield* session.revert
-            .clear(ctx.params.sessionID)
-            .pipe(
-              Effect.catchTag("Session.NotFoundError", missingSession),
-              Effect.catchTag("Session.BusyError", busySession),
-              Effect.catchTag("Snapshot.Error", failedSnapshot("clear session revert", ctx.params.sessionID)),
-              locationErrors,
-            )
+          yield* mapArchivedDefect(
+            session.revert
+              .clear(ctx.params.sessionID)
+              .pipe(
+                Effect.catchTag("Session.NotFoundError", missingSession),
+                Effect.catchTag("Session.BusyError", busySession),
+                Effect.catchTag("Snapshot.Error", failedSnapshot("clear session revert", ctx.params.sessionID)),
+                locationErrors,
+              ),
+          )
           return HttpApiSchema.NoContent.make()
         }),
       )
@@ -573,12 +583,14 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         "session.revert.commit",
         Effect.fn(function* (ctx) {
           yield* Effect.log("session.revert.commit", { sessionID: ctx.params.sessionID })
-          yield* session.revert
-            .commit(ctx.params.sessionID)
-            .pipe(
-              Effect.catchTag("Session.NotFoundError", missingSession),
-              Effect.catchTag("Session.BusyError", busySession),
-            )
+          yield* mapArchivedDefect(
+            session.revert
+              .commit(ctx.params.sessionID)
+              .pipe(
+                Effect.catchTag("Session.NotFoundError", missingSession),
+                Effect.catchTag("Session.BusyError", busySession),
+              ),
+          )
           return HttpApiSchema.NoContent.make()
         }),
       )
