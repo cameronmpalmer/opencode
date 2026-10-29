@@ -1161,6 +1161,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
+                }
+              }
+            }
           }
         },
         "description": "Create a session at the requested location. A parentID creates a linked child session at its parent's location.",
@@ -1804,6 +1814,16 @@
                       "$ref": "#/components/schemas/LocationNotFoundErrorEncoded"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
                 }
               }
             }
@@ -2767,6 +2787,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
+                }
+              }
+            }
           }
         },
         "description": "Activate a skill for a session by appending a skill message and resuming execution.",
@@ -2997,6 +3027,16 @@
                       "$ref": "#/components/schemas/LocationNotFoundErrorEncoded"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
                 }
               }
             }

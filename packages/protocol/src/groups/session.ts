@@ -174,7 +174,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           permissions: Permission.Ruleset.pipe(Schema.optional),
         }),
         success: Schema.Struct({ data: PublicSessionInfo }),
-        error: SessionNotFoundError,
+        error: [SessionNotFoundError, ConflictError],
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "session.create",
@@ -310,7 +310,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           }),
         }),
         success: HttpApiSchema.NoContent,
-        error: [SessionNotFoundError, LocationNotFoundError],
+        error: [SessionNotFoundError, LocationNotFoundError, ConflictError, InvalidRequestError],
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "session.update",
@@ -426,7 +426,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           resume: Schema.Boolean.pipe(Schema.optional),
         }),
         success: HttpApiSchema.NoContent,
-        error: [SessionNotFoundError, SkillNotFoundError],
+        error: [SessionNotFoundError, SkillNotFoundError, ConflictError],
       })
         .middleware(sessionLocationMiddleware)
         .annotateMerge(
@@ -468,7 +468,7 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
           command: Schema.String,
         }),
         success: HttpApiSchema.NoContent,
-        error: SessionNotFoundError,
+        error: [SessionNotFoundError, ConflictError],
       })
         .middleware(sessionLocationMiddleware)
         .annotateMerge(

@@ -1,6 +1,6 @@
 import { Session } from "@opencode/core/session"
 import type { Snapshot } from "@opencode/core/snapshot"
-import { MessageNotFoundError, SessionNotFoundError, UnknownError } from "@opencode/protocol/errors"
+import { ConflictError, MessageNotFoundError, SessionNotFoundError, UnknownError } from "@opencode/protocol/errors"
 import { Effect } from "effect"
 
 export function missingSession(error: Session.NotFoundError) {
@@ -39,4 +39,15 @@ export function failedSnapshot(operation: string, sessionID: Session.ID) {
       ),
     )
   }
+}
+
+/** Map the archived-session write guard (a defect) to a 409 instead of a 500. */
+export function mapArchivedDefect<A, E, R>(effect: Effect.Effect<A, E, R>) {
+  return effect.pipe(
+    Effect.catchDefect((defect) =>
+      defect instanceof Session.SessionArchivedError
+        ? Effect.fail(new ConflictError({ resource: defect.sessionID, message: defect.message }))
+        : Effect.die(defect),
+    ),
+  )
 }

@@ -124,6 +124,7 @@ export {
   MessageNotFoundError,
   NotFoundError,
   PromptConflictError,
+  SessionArchivedError,
   SkillNotFoundError,
   SyntheticConflictError,
 }

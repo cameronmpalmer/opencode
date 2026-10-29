@@ -8,9 +8,12 @@ import { reconcileStaleArchiveState } from "../session/family-archive.js"
 
 // The V1 import copies time_archived but not the family archive fields. This
 // backfill runs after the import reaches phase "completed" so the legacy
-// session rows it reads are the final ones. It is idempotent: every field is
-// copied only when the session_v2 value is still null, so a newer value written
-// by the archive service is never overwritten.
+// session rows it reads are the final ones. It is idempotent: the durable
+// family fields are copied only when the session_v2 value is still null, so a
+// newer value written by the archive service is never overwritten. The
+// transient archive_state/archive_state_at markers are deliberately not copied;
+// a stale "archiving" marker in the legacy table must not resurrect after the
+// startup sweep.
 const FAMILY_COLUMNS = ["family_archive_id", "archive_cause", "archive_state", "archive_state_at"] as const
 
 export function run(): Effect.Effect<void, unknown, Database.Service> {
@@ -42,14 +45,6 @@ export function run(): Effect.Effect<void, unknown, Database.Service> {
             archive_cause = COALESCE(
               archive_cause,
               (SELECT session.archive_cause FROM session WHERE session.id = session_v2.id)
-            ),
-            archive_state = COALESCE(
-              archive_state,
-              (SELECT session.archive_state FROM session WHERE session.id = session_v2.id)
-            ),
-            archive_state_at = COALESCE(
-              archive_state_at,
-              (SELECT session.archive_state_at FROM session WHERE session.id = session_v2.id)
             )
           WHERE EXISTS (SELECT 1 FROM session WHERE session.id = session_v2.id)
             AND (
@@ -57,10 +52,6 @@ export function run(): Effect.Effect<void, unknown, Database.Service> {
                 AND (SELECT session.family_archive_id FROM session WHERE session.id = session_v2.id) IS NOT NULL)
               OR (archive_cause IS NULL
                 AND (SELECT session.archive_cause FROM session WHERE session.id = session_v2.id) IS NOT NULL)
-              OR (archive_state IS NULL
-                AND (SELECT session.archive_state FROM session WHERE session.id = session_v2.id) IS NOT NULL)
-              OR (archive_state_at IS NULL
-                AND (SELECT session.archive_state_at FROM session WHERE session.id = session_v2.id) IS NOT NULL)
             )
         `)
         // The V1 branch recorded a snapshot per archived root. A database that

@@ -146,8 +146,11 @@ describe("family archive migration", () => {
         ).toEqual({
           family_archive_id: "ses_family",
           archive_cause: "migration",
-          archive_state: "archiving",
-          archive_state_at: 123,
+          // The transient archiving marker is intentionally not copied; the
+          // startup sweep clears stale markers and the archive service sets
+          // them only for the duration of an operation.
+          archive_state: null,
+          archive_state_at: null,
         })
         expect(
           yield* db.get(sql`
@@ -160,7 +163,7 @@ describe("family archive migration", () => {
         expect(yield* db.get(sql`SELECT COUNT(*) AS count FROM family_archive_migration`)).toEqual({ count: 1 })
         expect(
           yield* db.get(sql`SELECT family_archive_id, archive_state_at FROM session_v2 WHERE id = 'ses_family'`),
-        ).toEqual({ family_archive_id: "ses_family", archive_state_at: 123 })
+        ).toEqual({ family_archive_id: "ses_family", archive_state_at: null })
       }),
     )
   })
