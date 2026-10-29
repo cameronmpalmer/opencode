@@ -423,11 +423,6 @@ export const make = Effect.fn("Session.make")(function* () {
         })
       }).pipe(Effect.ensuring(releaseRows(restore.map((row) => row.id))))
     }
-    yield* database.db
-      .delete(FamilyArchiveMigrationTable)
-      .where(eq(FamilyArchiveMigrationTable.root_session_id, root.id))
-      .run()
-      .pipe(Effect.orDie)
     const stillArchived = rows.filter((row) => row.time_archived !== null && !restored.has(row.id)).map((row) => row.id)
     return {
       root_id: root.id,

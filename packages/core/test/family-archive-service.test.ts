@@ -167,7 +167,9 @@ describe("family archive service", () => {
           archive_state_at: null,
         })
       }
-      expect(yield* migrationRows(db)).toEqual([])
+      expect(yield* migrationRows(db)).toEqual([
+        { root_session_id: root, root_archived_at: expect.any(Number), applied_at: expect.any(Number) },
+      ])
       expect(yield* guardCount(db)).toBe(0)
     }),
   )
