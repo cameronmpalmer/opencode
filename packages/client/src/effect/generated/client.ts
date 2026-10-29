@@ -47,6 +47,12 @@ import type {
   SessionSwitchModelOutput,
   SessionUpdateInput,
   SessionUpdateOutput,
+  SessionArchivePreviewInput,
+  SessionArchivePreviewOutput,
+  SessionArchiveFamilyInput,
+  SessionArchiveFamilyOutput,
+  SessionUnarchiveFamilyInput,
+  SessionUnarchiveFamilyOutput,
   SessionMoveInput,
   SessionMoveOutput,
   SessionPromptInput,
@@ -527,6 +533,24 @@ const EndpointSessionUpdate = (raw: RawClient["server.session"]) => (input: Sess
     }).pipe(Effect.mapError(mapClientError)),
   )
 
+const EndpointSessionArchivePreview = (raw: RawClient["server.session"]) => (input: SessionArchivePreviewInput) =>
+  preserveEffect<SessionArchivePreviewOutput>()(
+    raw["session.archivePreview"]({ params: { sessionID: input["sessionID"] } }).pipe(Effect.mapError(mapClientError)),
+  )
+
+const EndpointSessionArchiveFamily = (raw: RawClient["server.session"]) => (input: SessionArchiveFamilyInput) =>
+  preserveEffect<SessionArchiveFamilyOutput>()(
+    raw["session.archiveFamily"]({
+      params: { sessionID: input["sessionID"] },
+      payload: { archivedAt: input["archivedAt"], waitTimeoutMs: input["waitTimeoutMs"] },
+    }).pipe(Effect.mapError(mapClientError)),
+  )
+
+const EndpointSessionUnarchiveFamily = (raw: RawClient["server.session"]) => (input: SessionUnarchiveFamilyInput) =>
+  preserveEffect<SessionUnarchiveFamilyOutput>()(
+    raw["session.unarchiveFamily"]({ params: { sessionID: input["sessionID"] } }).pipe(Effect.mapError(mapClientError)),
+  )
+
 const EndpointSessionMove = (raw: RawClient["server.session"]) => (input: SessionMoveInput) =>
   preserveEffect<SessionMoveOutput>()(
     raw["session.move"]({
@@ -821,6 +845,9 @@ const adaptGroupSession = (raw: RawClient["server.session"]) => ({
   switchAgent: EndpointSessionSwitchAgent(raw),
   switchModel: EndpointSessionSwitchModel(raw),
   update: EndpointSessionUpdate(raw),
+  archivePreview: EndpointSessionArchivePreview(raw),
+  archiveFamily: EndpointSessionArchiveFamily(raw),
+  unarchiveFamily: EndpointSessionUnarchiveFamily(raw),
   move: EndpointSessionMove(raw),
   prompt: EndpointSessionPrompt(raw),
   command: EndpointSessionCommand(raw),

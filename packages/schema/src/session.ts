@@ -146,3 +146,27 @@ export const ListCursor = Schema.String.pipe(
   }),
 )
 export type ListCursor = typeof ListCursor.Type
+
+export const ArchivePreview = Schema.Struct({
+  root_id: ID,
+  descendant_count: Schema.Finite,
+  active_count: Schema.Finite,
+  active_session_ids: Schema.Array(ID),
+}).annotate({ identifier: "Session.ArchivePreview" })
+export type ArchivePreview = typeof ArchivePreview.Type
+
+export const ArchiveResult = Schema.Struct({
+  root_id: ID,
+  archived_ids: Schema.Array(ID),
+  already_archived_ids: Schema.Array(ID),
+  cancelled_ids: Schema.Array(ID),
+  archive_time: Schema.Finite,
+}).annotate({ identifier: "Session.ArchiveResult" })
+export type ArchiveResult = typeof ArchiveResult.Type
+
+export const UnarchiveResult = Schema.Struct({
+  root_id: ID,
+  restored_ids: Schema.Array(ID),
+  still_archived_ids: Schema.Array(ID),
+}).annotate({ identifier: "Session.UnarchiveResult" })
+export type UnarchiveResult = typeof UnarchiveResult.Type

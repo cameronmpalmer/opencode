@@ -1,7 +1,7 @@
 export * as FamilyArchive from "./family-archive.js"
 
 import { and, gte, inArray, sql } from "drizzle-orm"
-import { Effect, Schema } from "effect"
+import { Effect } from "effect"
 import { Database } from "../database/database.js"
 import { SessionSchema } from "./schema.js"
 import { SessionRunLeaseTable, SessionTable } from "./sql.js"
@@ -11,29 +11,7 @@ export const LIVE_LEASE_MS = 60_000
 type Db = Database.Interface["db"]
 export type SessionRow = typeof SessionTable.$inferSelect
 
-export const ArchivePreview = Schema.Struct({
-  root_id: SessionSchema.ID,
-  descendant_count: Schema.Finite,
-  active_count: Schema.Finite,
-  active_session_ids: Schema.Array(SessionSchema.ID),
-})
-export type ArchivePreview = typeof ArchivePreview.Type
-
-export const ArchiveResult = Schema.Struct({
-  root_id: SessionSchema.ID,
-  archived_ids: Schema.Array(SessionSchema.ID),
-  already_archived_ids: Schema.Array(SessionSchema.ID),
-  cancelled_ids: Schema.Array(SessionSchema.ID),
-  archive_time: Schema.Finite,
-})
-export type ArchiveResult = typeof ArchiveResult.Type
-
-export const UnarchiveResult = Schema.Struct({
-  root_id: SessionSchema.ID,
-  restored_ids: Schema.Array(SessionSchema.ID),
-  still_archived_ids: Schema.Array(SessionSchema.ID),
-})
-export type UnarchiveResult = typeof UnarchiveResult.Type
+export { ArchivePreview, ArchiveResult, UnarchiveResult } from "@opencode/schema/session"
 
 /**
  * The SQL definition of the effective family key (design 6.1), shared by every

@@ -373,6 +373,27 @@ export type PermissionRule = { action: string; resource: string; effect: Permiss
 
 export type PluginInfo = { id?: PluginID; source: PluginSource; features: PluginFeatures; state: PluginState }
 
+export type SessionArchivePreview = {
+  root_id: SessionID
+  descendant_count: number
+  active_count: number
+  active_session_ids: Array<SessionID>
+}
+
+export type SessionArchiveResult = {
+  root_id: SessionID
+  archived_ids: Array<SessionID>
+  already_archived_ids: Array<SessionID>
+  cancelled_ids: Array<SessionID>
+  archive_time: number
+}
+
+export type SessionUnarchiveResult = {
+  root_id: SessionID
+  restored_ids: Array<SessionID>
+  still_archived_ids: Array<SessionID>
+}
+
 export type SessionForkBoundary =
   | { type: "before"; messageID: SessionMessageID }
   | { type: "through"; messageID: SessionMessageID }
@@ -3271,6 +3292,22 @@ export type SessionUpdateInput = {
 }
 
 export type SessionUpdateOutput = void
+
+export type SessionArchivePreviewInput = { readonly sessionID: string }
+
+export type SessionArchivePreviewOutput = SessionArchivePreview
+
+export type SessionArchiveFamilyInput = {
+  readonly sessionID: string
+  readonly archivedAt?: number | undefined
+  readonly waitTimeoutMs?: number | undefined
+}
+
+export type SessionArchiveFamilyOutput = SessionArchiveResult
+
+export type SessionUnarchiveFamilyInput = { readonly sessionID: string }
+
+export type SessionUnarchiveFamilyOutput = SessionUnarchiveResult
 
 export type SessionMoveInput = {
   readonly sessionID: string

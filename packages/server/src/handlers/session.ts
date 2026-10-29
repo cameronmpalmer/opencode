@@ -263,6 +263,65 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         }),
       )
       .handle(
+        "session.archivePreview",
+        Effect.fn(function* (ctx) {
+          return yield* session.archivePreview(ctx.params.sessionID).pipe(
+            Effect.catchTag("Session.NotFoundError", missingSession),
+            Effect.catchTag("Session.FamilyMemberError", (error) =>
+              Effect.fail(new ConflictError({ resource: error.familyRootID, message: error.message })),
+            ),
+            Effect.catchTag("Session.ArchiveInProgressError", (error) =>
+              Effect.fail(new ConflictError({ resource: error.sessionIDs.join(","), message: error.message })),
+            ),
+            Effect.catchTag("Session.ArchiveBlockedError", (error) =>
+              Effect.fail(new ConflictError({ resource: error.sessionIDs.join(","), message: error.message })),
+            ),
+            Effect.catchTag("Session.InvalidArchiveTimeError", (error) =>
+              Effect.fail(new InvalidRequestError({ message: error.message })),
+            ),
+          )
+        }),
+      )
+      .handle(
+        "session.archiveFamily",
+        Effect.fn(function* (ctx) {
+          return yield* session
+            .archiveSubtree(ctx.params.sessionID, {
+              archivedAt: ctx.payload.archivedAt,
+              waitTimeoutMs: ctx.payload.waitTimeoutMs,
+            })
+            .pipe(
+              Effect.catchTag("Session.NotFoundError", missingSession),
+              Effect.catchTag("Session.FamilyMemberError", (error) =>
+                Effect.fail(new ConflictError({ resource: error.familyRootID, message: error.message })),
+              ),
+              Effect.catchTag("Session.ArchiveInProgressError", (error) =>
+                Effect.fail(new ConflictError({ resource: error.sessionIDs.join(","), message: error.message })),
+              ),
+              Effect.catchTag("Session.ArchiveBlockedError", (error) =>
+                Effect.fail(new ConflictError({ resource: error.sessionIDs.join(","), message: error.message })),
+              ),
+              Effect.catchTag("Session.InvalidArchiveTimeError", (error) =>
+                Effect.fail(new InvalidRequestError({ message: error.message })),
+              ),
+            )
+        }),
+      )
+      .handle(
+        "session.unarchiveFamily",
+        Effect.fn(function* (ctx) {
+          return yield* session.unarchiveSubtree(ctx.params.sessionID).pipe(
+            Effect.catchTag("Session.NotFoundError", missingSession),
+            Effect.catchTag("Session.FamilyMemberError", (error) =>
+              Effect.fail(new ConflictError({ resource: error.familyRootID, message: error.message })),
+            ),
+            Effect.catchTag("Session.ArchiveInProgressError", (error) =>
+              Effect.fail(new ConflictError({ resource: error.sessionIDs.join(","), message: error.message })),
+            ),
+          )
+        }),
+      )
+      .handle(
         "session.move",
         Effect.fn(function* (ctx) {
           yield* session

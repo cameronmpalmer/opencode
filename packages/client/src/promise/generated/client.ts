@@ -41,6 +41,12 @@ import type {
   SessionSwitchModelOutput,
   SessionUpdateInput,
   SessionUpdateOutput,
+  SessionArchivePreviewInput,
+  SessionArchivePreviewOutput,
+  SessionArchiveFamilyInput,
+  SessionArchiveFamilyOutput,
+  SessionUnarchiveFamilyInput,
+  SessionUnarchiveFamilyOutput,
   SessionMoveInput,
   SessionMoveOutput,
   SessionPromptInput,
@@ -740,6 +746,40 @@ export function make(options: ClientOptions) {
             successStatus: 204,
             declaredStatuses: [400, 401, 404],
             empty: true,
+          },
+          requestOptions,
+        ),
+      archivePreview: (input: SessionArchivePreviewInput, requestOptions?: RequestOptions) =>
+        request<SessionArchivePreviewOutput>(
+          {
+            method: "GET",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/archive-preview`,
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404, 409],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      archiveFamily: (input: SessionArchiveFamilyInput, requestOptions?: RequestOptions) =>
+        request<SessionArchiveFamilyOutput>(
+          {
+            method: "POST",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/archive-family`,
+            body: { archivedAt: input["archivedAt"], waitTimeoutMs: input["waitTimeoutMs"] },
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404, 409],
+            empty: false,
+          },
+          requestOptions,
+        ),
+      unarchiveFamily: (input: SessionUnarchiveFamilyInput, requestOptions?: RequestOptions) =>
+        request<SessionUnarchiveFamilyOutput>(
+          {
+            method: "POST",
+            path: `/api/session/${encodeURIComponent(input.sessionID)}/unarchive-family`,
+            successStatus: 200,
+            declaredStatuses: [400, 401, 404, 409],
+            empty: false,
           },
           requestOptions,
         ),

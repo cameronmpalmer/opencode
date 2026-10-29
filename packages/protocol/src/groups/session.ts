@@ -320,6 +320,49 @@ export const makeSessionGroup = <I extends HttpApiMiddleware.AnyId, S, FormI ext
       ),
     )
     .add(
+      HttpApiEndpoint.get("session.archivePreview", "/api/session/:sessionID/archive-preview", {
+        params: { sessionID: Session.ID },
+        success: Session.ArchivePreview,
+        error: [SessionNotFoundError, ConflictError, InvalidRequestError],
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "session.archivePreview",
+          summary: "Preview family archive",
+          description: "Count the descendants and active runs that archiving this session would affect.",
+        }),
+      ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.archiveFamily", "/api/session/:sessionID/archive-family", {
+        params: { sessionID: Session.ID },
+        payload: Schema.Struct({
+          archivedAt: Schema.Finite.pipe(Schema.optional),
+          waitTimeoutMs: Schema.Finite.pipe(Schema.optional),
+        }),
+        success: Session.ArchiveResult,
+        error: [SessionNotFoundError, ConflictError, InvalidRequestError],
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "session.archiveFamily",
+          summary: "Archive family",
+          description: "Archive a session and every descendant, cancelling active runs in the subtree.",
+        }),
+      ),
+    )
+    .add(
+      HttpApiEndpoint.post("session.unarchiveFamily", "/api/session/:sessionID/unarchive-family", {
+        params: { sessionID: Session.ID },
+        success: Session.UnarchiveResult,
+        error: [SessionNotFoundError, ConflictError],
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "session.unarchiveFamily",
+          summary: "Unarchive family",
+          description: "Restore a session and the cascade members of its family.",
+        }),
+      ),
+    )
+    .add(
       HttpApiEndpoint.post("session.move", "/api/session/:sessionID/move", {
         params: { sessionID: Session.ID },
         payload: Schema.Struct({ ...Location.PublicRef.fields, delivery: SessionInbox.Delivery.pipe(Schema.optional) }),

@@ -2107,6 +2107,252 @@
         }
       }
     },
+    "/api/session/{sessionID}/archive-preview": {
+      "get": {
+        "tags": ["session"],
+        "operationId": "session.archivePreview",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "$ref": "#/components/schemas/Session.ID"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Session.ArchivePreview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session.ArchivePreview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SessionNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionNotFoundErrorEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Count the descendants and active runs that archiving this session would affect.",
+        "summary": "Preview family archive"
+      }
+    },
+    "/api/session/{sessionID}/archive-family": {
+      "post": {
+        "tags": ["session"],
+        "operationId": "session.archiveFamily",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "$ref": "#/components/schemas/Session.ID"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Session.ArchiveResult",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session.ArchiveResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SessionNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionNotFoundErrorEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Archive a session and every descendant, cancelling active runs in the subtree.",
+        "summary": "Archive family",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "archivedAt": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "waitTimeoutMs": {
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": true
+        }
+      }
+    },
+    "/api/session/{sessionID}/unarchive-family": {
+      "post": {
+        "tags": ["session"],
+        "operationId": "session.unarchiveFamily",
+        "parameters": [
+          {
+            "name": "sessionID",
+            "in": "path",
+            "schema": {
+              "$ref": "#/components/schemas/Session.ID"
+            },
+            "required": true
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Session.UnarchiveResult",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session.UnarchiveResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "InvalidRequestError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvalidRequestErrorEncoded"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UnauthorizedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnauthorizedErrorEncoded"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SessionNotFoundError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionNotFoundErrorEncoded"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "ConflictError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConflictErrorEncoded"
+                }
+              }
+            }
+          }
+        },
+        "description": "Restore a session and the cascade members of its family.",
+        "summary": "Unarchive family"
+      }
+    },
     "/api/session/{sessionID}/move": {
       "post": {
         "tags": ["session"],
@@ -20677,6 +20923,59 @@
         "required": ["_tag", "message"],
         "additionalProperties": false
       },
+      "Session.ArchivePreview": {
+        "type": "object",
+        "properties": {
+          "root_id": {
+            "$ref": "#/components/schemas/Session.ID"
+          },
+          "descendant_count": {
+            "type": "number"
+          },
+          "active_count": {
+            "type": "number"
+          },
+          "active_session_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session.ID"
+            }
+          }
+        },
+        "required": ["root_id", "descendant_count", "active_count", "active_session_ids"],
+        "additionalProperties": false
+      },
+      "Session.ArchiveResult": {
+        "type": "object",
+        "properties": {
+          "root_id": {
+            "$ref": "#/components/schemas/Session.ID"
+          },
+          "archived_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session.ID"
+            }
+          },
+          "already_archived_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session.ID"
+            }
+          },
+          "cancelled_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session.ID"
+            }
+          },
+          "archive_time": {
+            "type": "number"
+          }
+        },
+        "required": ["root_id", "archived_ids", "already_archived_ids", "cancelled_ids", "archive_time"],
+        "additionalProperties": false
+      },
       "Session.ForkBoundary": {
         "anyOf": [
           {
@@ -22003,6 +22302,28 @@
           }
         },
         "required": ["type", "message"],
+        "additionalProperties": false
+      },
+      "Session.UnarchiveResult": {
+        "type": "object",
+        "properties": {
+          "root_id": {
+            "$ref": "#/components/schemas/Session.ID"
+          },
+          "restored_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session.ID"
+            }
+          },
+          "still_archived_ids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Session.ID"
+            }
+          }
+        },
+        "required": ["root_id", "restored_ids", "still_archived_ids"],
         "additionalProperties": false
       },
       "SessionActive": {

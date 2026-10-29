@@ -274,6 +274,28 @@ export type SessionUpdateInput = {
 export type SessionUpdateOutput = void
 export type SessionUpdateOperation<E = never> = (input: SessionUpdateInput) => Effect.Effect<SessionUpdateOutput, E>
 
+export type SessionArchivePreviewInput = { readonly sessionID: Session.ID }
+export type SessionArchivePreviewOutput = Session.ArchivePreview
+export type SessionArchivePreviewOperation<E = never> = (
+  input: SessionArchivePreviewInput,
+) => Effect.Effect<SessionArchivePreviewOutput, E>
+
+export type SessionArchiveFamilyInput = {
+  readonly sessionID: Session.ID
+  readonly archivedAt?: number | undefined
+  readonly waitTimeoutMs?: number | undefined
+}
+export type SessionArchiveFamilyOutput = Session.ArchiveResult
+export type SessionArchiveFamilyOperation<E = never> = (
+  input: SessionArchiveFamilyInput,
+) => Effect.Effect<SessionArchiveFamilyOutput, E>
+
+export type SessionUnarchiveFamilyInput = { readonly sessionID: Session.ID }
+export type SessionUnarchiveFamilyOutput = Session.UnarchiveResult
+export type SessionUnarchiveFamilyOperation<E = never> = (
+  input: SessionUnarchiveFamilyInput,
+) => Effect.Effect<SessionUnarchiveFamilyOutput, E>
+
 export type SessionMoveInput = {
   readonly sessionID: Session.ID
   readonly directory: AbsolutePath
@@ -1343,6 +1365,9 @@ export interface SessionApi<E = never> {
   readonly switchAgent: SessionSwitchAgentOperation<E>
   readonly switchModel: SessionSwitchModelOperation<E>
   readonly update: SessionUpdateOperation<E>
+  readonly archivePreview: SessionArchivePreviewOperation<E>
+  readonly archiveFamily: SessionArchiveFamilyOperation<E>
+  readonly unarchiveFamily: SessionUnarchiveFamilyOperation<E>
   readonly move: SessionMoveOperation<E>
   readonly prompt: SessionPromptOperation<E>
   readonly command: SessionCommandOperation<E>
