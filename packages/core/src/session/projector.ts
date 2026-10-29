@@ -591,10 +591,15 @@ const layer = Layer.effectDiscard(
               .pipe(Effect.orDie)
           },
           { discard: true },
+        ).pipe(
+          Effect.ensuring(
+            Effect.forEach(
+              exempt,
+              (row) => db.run(sql`DELETE FROM session_import_exempt WHERE session_id = ${row.id}`).pipe(Effect.orDie),
+              { discard: true },
+            ),
+          ),
         )
-        for (const row of exempt) {
-          yield* db.run(sql`DELETE FROM session_import_exempt WHERE session_id = ${row.id}`).pipe(Effect.orDie)
-        }
       }),
     )
     yield* bus.project(SessionEvent.Deleted, (event) =>

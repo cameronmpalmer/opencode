@@ -164,12 +164,14 @@ const layer = Layer.effect(
                 ? Effect.fail(new ImportConflictError({ sessionID }))
                 : Effect.die(defect),
             ),
+            Effect.ensuring(
+              db
+                .delete(SessionImportExemptTable)
+                .where(eq(SessionImportExemptTable.session_id, sessionID))
+                .run()
+                .pipe(Effect.orDie),
+            ),
           )
-        yield* db
-          .delete(SessionImportExemptTable)
-          .where(eq(SessionImportExemptTable.session_id, sessionID))
-          .run()
-          .pipe(Effect.orDie)
         return yield* sessions.get(sessionID).pipe(Effect.orDie)
       }),
     })

@@ -208,6 +208,7 @@ export function reconcileStaleArchiveState(db: Db): Effect.Effect<void, unknown>
   return db.transaction((tx) =>
     Effect.gen(function* () {
       yield* tx.run(sql`DELETE FROM session_archive_guard`)
+      yield* tx.run(sql`DELETE FROM session_import_exempt`)
       // The archive trigger requires a guard for every archive-field write.
       // No archive operation can be in progress at startup, so authorize the
       // stale marker rows and release the guards in the same transaction.
