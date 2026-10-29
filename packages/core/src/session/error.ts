@@ -97,3 +97,38 @@ export class InboxConflictError extends Schema.TaggedError<InboxConflictError>()
 export class SkillNotFoundError extends Schema.TaggedError<SkillNotFoundError>()("Session.SkillNotFoundError", {
   skill: Skill.ID,
 }) {}
+
+export class SessionArchivedError extends Schema.TaggedError<SessionArchivedError>()("Session.SessionArchivedError", {
+  sessionID: SessionSchema.ID,
+  message: Schema.String,
+}) {}
+
+export class ArchiveInProgressError extends Schema.TaggedError<ArchiveInProgressError>()(
+  "Session.ArchiveInProgressError",
+  {
+    sessionID: SessionSchema.ID,
+    sessionIDs: Schema.Array(SessionSchema.ID),
+    message: Schema.String,
+  },
+) {}
+
+export class ArchiveBlockedError extends Schema.TaggedError<ArchiveBlockedError>()("Session.ArchiveBlockedError", {
+  sessionID: SessionSchema.ID,
+  sessionIDs: Schema.Array(SessionSchema.ID),
+  message: Schema.String,
+}) {}
+
+export class InvalidArchiveTimeError extends Schema.TaggedError<InvalidArchiveTimeError>()(
+  "Session.InvalidArchiveTimeError",
+  {
+    sessionID: SessionSchema.ID,
+    time: Schema.Finite,
+    message: Schema.String,
+  },
+) {}
+
+export class FamilyMemberError extends Schema.TaggedError<FamilyMemberError>()("Session.FamilyMemberError", {
+  sessionID: SessionSchema.ID,
+  familyRootID: SessionSchema.ID,
+  message: Schema.String,
+}) {}

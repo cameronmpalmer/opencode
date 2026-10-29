@@ -565,7 +565,13 @@ export type SessionLogOutput =
           readonly location?:
             | { readonly directory: AbsolutePath; readonly workspaceID?: Workspace.ID | undefined }
             | undefined
-          readonly data: { readonly sessionID: Session.ID }
+          readonly data: {
+            readonly sessionID: Session.ID
+            readonly familyArchiveID?: Session.ID | null | undefined
+            readonly archiveCause?: "user" | "cascade" | "migration" | null | undefined
+            readonly archiveState?: "archiving" | null | undefined
+            readonly archiveStateAt?: number | null | undefined
+          }
         }
       | {
           readonly id: Event.ID

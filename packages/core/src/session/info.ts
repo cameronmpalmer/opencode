@@ -49,6 +49,10 @@ export function fromRow(row: typeof SessionTable.$inferSelect): SessionSchema.In
     permissions: row.permission ?? undefined,
     revert: row.revert ? decodeRevert(row.revert) : undefined,
     outcome: row.idle_outcome ?? undefined,
+    familyArchiveID: row.family_archive_id ?? undefined,
+    archiveCause: row.archive_cause ?? undefined,
+    archiveState: row.archive_state ?? undefined,
+    archiveStateAt: row.archive_state_at ?? undefined,
     time: {
       created: DateTime.makeUnsafe(row.time_created),
       updated: DateTime.makeUnsafe(row.time_updated),

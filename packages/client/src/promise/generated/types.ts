@@ -1115,7 +1115,13 @@ export type SessionArchived = {
   type: "session.archived"
   durable: { aggregateID: string; seq: EventSeq; version: 1 }
   location?: LocationRef
-  data: { sessionID: SessionID }
+  data: {
+    sessionID: SessionID
+    familyArchiveID?: SessionID | null
+    archiveCause?: "user" | "cascade" | "migration" | null
+    archiveState?: "archiving" | null
+    archiveStateAt?: number | null
+  }
 }
 
 export type SessionUnarchived = {

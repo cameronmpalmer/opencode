@@ -650,7 +650,14 @@ const layer = Layer.effectDiscard(
     yield* bus.project(SessionEvent.Archived, (event) =>
       db
         .update(SessionTable)
-        .set({ time_archived: event.created, time_updated: event.created })
+        .set({
+          time_archived: event.created,
+          time_updated: event.created,
+          ...(event.data.familyArchiveID !== undefined ? { family_archive_id: event.data.familyArchiveID } : {}),
+          ...(event.data.archiveCause !== undefined ? { archive_cause: event.data.archiveCause } : {}),
+          ...(event.data.archiveState !== undefined ? { archive_state: event.data.archiveState } : {}),
+          ...(event.data.archiveStateAt !== undefined ? { archive_state_at: event.data.archiveStateAt } : {}),
+        })
         .where(eq(SessionTable.id, event.data.sessionID))
         .run()
         .pipe(Effect.orDie),
@@ -658,7 +665,14 @@ const layer = Layer.effectDiscard(
     yield* bus.project(SessionEvent.Unarchived, (event) =>
       db
         .update(SessionTable)
-        .set({ time_archived: null, time_updated: event.created })
+        .set({
+          time_archived: null,
+          family_archive_id: null,
+          archive_cause: null,
+          archive_state: null,
+          archive_state_at: null,
+          time_updated: event.created,
+        })
         .where(eq(SessionTable.id, event.data.sessionID))
         .run()
         .pipe(Effect.orDie),

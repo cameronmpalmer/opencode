@@ -133,7 +133,13 @@ export type Viewed = typeof Viewed.Type
 export const Archived = Event.durable({
   type: "session.archived",
   ...options,
-  schema: Base,
+  schema: {
+    ...Base,
+    familyArchiveID: Schema.NullOr(SessionID).pipe(optional),
+    archiveCause: Schema.NullOr(Schema.Literals(["user", "cascade", "migration"])).pipe(optional),
+    archiveState: Schema.NullOr(Schema.Literal("archiving")).pipe(optional),
+    archiveStateAt: Schema.NullOr(Schema.Finite).pipe(optional),
+  },
 })
 export type Archived = typeof Archived.Type
 
