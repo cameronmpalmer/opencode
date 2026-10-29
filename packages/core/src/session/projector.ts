@@ -13,7 +13,7 @@ import { SessionMessageUpdater } from "./message-updater.js"
 import { SessionInbox } from "./inbox.js"
 import { InstructionState } from "./instruction-state.js"
 import { SessionBlob } from "./blob.js"
-import { SessionInboxTable, SessionMessageTable, SessionTable } from "./sql.js"
+import { SessionInboxTable, SessionMessageTable, SessionPurgedTable, SessionTable } from "./sql.js"
 import { SessionStored } from "./stored.js"
 import { InstructionEntry } from "./instruction-entry.js"
 import { Slug } from "../util/slug.js"
@@ -584,6 +584,14 @@ const layer = Layer.effectDiscard(
     yield* bus.project(SessionEvent.Deleted, (event) =>
       Effect.gen(function* () {
         yield* SessionBlob.releaseSession(db, event.data.sessionID)
+        // Tombstone before the row disappears so a late child insert cannot
+        // attach to a parent that no longer exists.
+        yield* db
+          .insert(SessionPurgedTable)
+          .values({ session_id: event.data.sessionID, purged_at: event.created })
+          .onConflictDoNothing()
+          .run()
+          .pipe(Effect.orDie)
         yield* db.delete(SessionTable).where(eq(SessionTable.id, event.data.sessionID)).run().pipe(Effect.orDie)
       }),
     )

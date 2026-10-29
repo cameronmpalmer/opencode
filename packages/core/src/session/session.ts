@@ -81,18 +81,41 @@ export const make = Effect.fn("Session.make")(function* () {
     yield* bus.publish(SessionEvent.Viewed, { sessionID, idle: input.idle })
   })
   const rename = Effect.fn("Session.rename")(function* (sessionID: SessionSchema.ID, input: { title: string }) {
-    yield* get(sessionID)
+    const session = yield* get(sessionID)
+    yield* assertWritable(session)
     yield* bus.publish(SessionEvent.Renamed, { sessionID, title: input.title })
   })
+  const guardRows = (ids: SessionSchema.ID[]) =>
+    database.db
+      .transaction((tx) =>
+        tx
+          .insert(SessionArchiveGuardTable)
+          .values(ids.map((id) => ({ session_id: id })))
+          .onConflictDoNothing()
+          .run(),
+      )
+      .pipe(Effect.orDie)
+  const releaseRows = (ids: SessionSchema.ID[]) =>
+    database.db
+      .transaction((tx) =>
+        tx.delete(SessionArchiveGuardTable).where(inArray(SessionArchiveGuardTable.session_id, ids)).run(),
+      )
+      .pipe(Effect.orDie)
   const archive = Effect.fn("Session.archive")(function* (sessionID: SessionSchema.ID) {
     const session = yield* get(sessionID)
     if (session.time.archived) return
-    yield* bus.publish(SessionEvent.Archived, { sessionID })
+    yield* guardRows([sessionID])
+    yield* bus
+      .publish(SessionEvent.Archived, { sessionID })
+      .pipe(Effect.ensuring(releaseRows([sessionID])))
   })
   const unarchive = Effect.fn("Session.unarchive")(function* (sessionID: SessionSchema.ID) {
     const session = yield* get(sessionID)
     if (!session.time.archived) return
-    yield* bus.publish(SessionEvent.Unarchived, { sessionID })
+    yield* guardRows([sessionID])
+    yield* bus
+      .publish(SessionEvent.Unarchived, { sessionID })
+      .pipe(Effect.ensuring(releaseRows([sessionID])))
   })
   const archivePreview = Effect.fn("Session.archivePreview")(function* (sessionID: SessionSchema.ID) {
     const root = yield* database.db
@@ -124,22 +147,6 @@ export const make = Effect.fn("Session.make")(function* () {
       active_session_ids: activeIDs,
     }
   })
-  const guardRows = (ids: SessionSchema.ID[]) =>
-    database.db
-      .transaction((tx) =>
-        tx
-          .insert(SessionArchiveGuardTable)
-          .values(ids.map((id) => ({ session_id: id })))
-          .onConflictDoNothing()
-          .run(),
-      )
-      .pipe(Effect.orDie)
-  const releaseRows = (ids: SessionSchema.ID[]) =>
-    database.db
-      .transaction((tx) =>
-        tx.delete(SessionArchiveGuardTable).where(inArray(SessionArchiveGuardTable.session_id, ids)).run(),
-      )
-      .pipe(Effect.orDie)
   const beginArchive = (ids: SessionSchema.ID[], marked: SessionSchema.ID[], at: number) =>
     database.db
       .transaction((tx) =>
@@ -451,14 +458,16 @@ export const make = Effect.fn("Session.make")(function* () {
     sessionID: SessionSchema.ID,
     input: { metadata: SessionSchema.Metadata },
   ) {
-    yield* get(sessionID)
+    const session = yield* get(sessionID)
+    yield* assertWritable(session)
     yield* bus.publish(SessionEvent.MetadataUpdated, { sessionID, metadata: input.metadata })
   })
   const setPermissions = Effect.fn("Session.setPermissions")(function* (
     sessionID: SessionSchema.ID,
     input: { permissions: Permission.Ruleset },
   ) {
-    yield* get(sessionID)
+    const session = yield* get(sessionID)
+    yield* assertWritable(session)
     yield* bus.publish(SessionEvent.Permissions, { sessionID, permissions: input.permissions })
   })
   const switchAgent = Effect.fn("Session.switchAgent")(function* (
@@ -466,6 +475,7 @@ export const make = Effect.fn("Session.make")(function* () {
     input: { agent: Agent.ID },
   ) {
     const session = yield* get(sessionID)
+    yield* assertWritable(session)
     yield* bus.publish(SessionEvent.AgentSelected, { sessionID, agent: input.agent, previous: session.agent })
   })
   const switchModel = Effect.fn("Session.switchModel")(function* (
@@ -473,6 +483,7 @@ export const make = Effect.fn("Session.make")(function* () {
     input: { model: Model.Ref },
   ) {
     const session = yield* get(sessionID)
+    yield* assertWritable(session)
     if (
       session.model?.providerID === input.model.providerID &&
       session.model.id === input.model.id &&
@@ -666,7 +677,8 @@ export const make = Effect.fn("Session.make")(function* () {
     ) =>
       Effect.uninterruptible(
         Effect.gen(function* () {
-          yield* get(sessionID)
+          const session = yield* get(sessionID)
+          yield* assertWritable(session)
           const inputID = input.id ?? SessionMessage.ID.create()
           const admittedInput = {
             type: "synthetic",
@@ -703,6 +715,7 @@ export const make = Effect.fn("Session.make")(function* () {
     input: { messageID: SessionMessage.ID; files?: boolean },
   ) {
     const session = yield* get(sessionID)
+    yield* assertWritable(session)
     if (yield* execution.isActive(sessionID)) return yield* new BusyError({ sessionID })
     return yield* SessionRevert.stage({ session, messageID: input.messageID, files: input.files }).pipe(
       Effect.provideService(Instance.Service, instances),
@@ -712,6 +725,7 @@ export const make = Effect.fn("Session.make")(function* () {
   })
   const clear = Effect.fn("Session.revert.clear")(function* (sessionID: SessionSchema.ID) {
     const session = yield* get(sessionID)
+    yield* assertWritable(session)
     if (yield* execution.isActive(sessionID)) return yield* new BusyError({ sessionID })
     yield* SessionRevert.clear(session).pipe(
       Effect.provideService(Instance.Service, instances),
@@ -721,6 +735,7 @@ export const make = Effect.fn("Session.make")(function* () {
   })
   const commit = Effect.fn("Session.revert.commit")(function* (sessionID: SessionSchema.ID) {
     const session = yield* get(sessionID)
+    yield* assertWritable(session)
     if (yield* execution.isActive(sessionID)) return yield* new BusyError({ sessionID })
     return yield* SessionRevert.commit(bus, session)
   })

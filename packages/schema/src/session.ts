@@ -61,6 +61,8 @@ export const Info = Schema.Struct({
   archiveCause: Schema.NullOr(Schema.Literals(["user", "cascade", "migration"])).pipe(optional),
   archiveState: Schema.NullOr(Schema.Literal("archiving")).pipe(optional),
   archiveStateAt: Schema.NullOr(Schema.Finite).pipe(optional),
+  /** Present on archived list rows: the number of archived members in the family. */
+  familyMemberCount: Schema.Finite.pipe(optional),
 }).annotate({ identifier: "Session.Info" })
 
 export const ListAnchor = Schema.Struct({

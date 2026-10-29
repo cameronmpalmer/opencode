@@ -21392,6 +21392,9 @@
               }
             ]
           },
+          "familyMemberCount": {
+            "type": "number"
+          },
           "location": {
             "$ref": "#/components/schemas/Location.PublicRef"
           }

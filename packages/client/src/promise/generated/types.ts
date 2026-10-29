@@ -2218,6 +2218,7 @@ export type SessionInfo = {
   archiveCause?: "user" | "cascade" | "migration" | null
   archiveState?: "archiving" | null
   archiveStateAt?: number | null
+  familyMemberCount?: number
   location: LocationPublicRef
 }
 
@@ -3244,6 +3245,7 @@ export type SessionImportInput = {
     readonly archiveCause?: "user" | "cascade" | "migration" | null
     readonly archiveState?: "archiving" | null
     readonly archiveStateAt?: number | null
+    readonly familyMemberCount?: number
     readonly location: { readonly directory: string }
   }
   readonly messages: ReadonlyArray<JsonValue>

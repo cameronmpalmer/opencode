@@ -20,7 +20,7 @@ import { Slug } from "../util/slug.js"
 import { SessionEvent } from "./event.js"
 import { SessionMessage } from "./message.js"
 import { SessionProjector } from "./projector.js"
-import { SessionMessageTable, SessionTable } from "./sql.js"
+import { SessionImportExemptTable, SessionMessageTable, SessionTable } from "./sql.js"
 
 export const Data = SessionTransfer.Data
 export type Data = SessionTransfer.Data
@@ -86,6 +86,12 @@ const layer = Layer.effect(
             data,
           }
         })
+        yield* db
+          .insert(SessionImportExemptTable)
+          .values({ session_id: sessionID, expires_at: Date.now() + 60_000 })
+          .onConflictDoNothing()
+          .run()
+          .pipe(Effect.orDie)
         yield* bus
           .publish(
             SessionEvent.Created,
@@ -136,6 +142,10 @@ const layer = Layer.effect(
                       time_archived: input.data.info.time.archived
                         ? DateTime.toEpochMillis(input.data.info.time.archived)
                         : null,
+                      family_archive_id: input.data.info.familyArchiveID ?? null,
+                      archive_cause: input.data.info.archiveCause ?? null,
+                      archive_state: input.data.info.archiveState ?? null,
+                      archive_state_at: input.data.info.archiveStateAt ?? null,
                     })
                     .where(eq(SessionTable.id, sessionID))
                     .run()
@@ -150,6 +160,11 @@ const layer = Layer.effect(
                 : Effect.die(defect),
             ),
           )
+        yield* db
+          .delete(SessionImportExemptTable)
+          .where(eq(SessionImportExemptTable.session_id, sessionID))
+          .run()
+          .pipe(Effect.orDie)
         return yield* sessions.get(sessionID).pipe(Effect.orDie)
       }),
     })

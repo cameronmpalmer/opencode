@@ -9,9 +9,10 @@ import { Session } from "@opencode/core/session"
 import { SessionExecution } from "@opencode/core/session/execution"
 import { effectiveFamilyKeySql, loadSubtree, orderSubtree } from "@opencode/core/session/family-archive"
 import { SessionProjector } from "@opencode/core/session/projector"
-import { SessionRunLeaseTable, SessionTable } from "@opencode/core/session/sql"
+import { SessionImportExemptTable, SessionRunLeaseTable, SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { LayerNode } from "@opencode/util/effect/layer-node"
+import { eq } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import { testEffect } from "./lib/effect"
 import { globalProjectNode } from "./lib/project"
@@ -55,20 +56,35 @@ const addSession = (
   id: Session.ID,
   values: Partial<typeof SessionTable.$inferInsert> = {},
 ) =>
-  db
-    .insert(SessionTable)
-    .values({
-      id,
-      project_id: Project.ID.global,
-      slug: id,
-      directory: "/project",
-      version: "1",
-      time_created: 1,
-      time_updated: 1,
-      ...values,
-    })
-    .run()
-    .pipe(Effect.orDie)
+  Effect.gen(function* () {
+    // Test seeds may insert a child under an already archived parent. The
+    // production import path uses the same short-lived exemption.
+    yield* db
+      .insert(SessionImportExemptTable)
+      .values({ session_id: id, expires_at: Date.now() + 60_000 })
+      .onConflictDoNothing()
+      .run()
+      .pipe(Effect.orDie)
+    yield* db
+      .insert(SessionTable)
+      .values({
+        id,
+        project_id: Project.ID.global,
+        slug: id,
+        directory: "/project",
+        version: "1",
+        time_created: 1,
+        time_updated: 1,
+        ...values,
+      })
+      .run()
+      .pipe(Effect.orDie)
+    yield* db
+      .delete(SessionImportExemptTable)
+      .where(eq(SessionImportExemptTable.session_id, id))
+      .run()
+      .pipe(Effect.orDie)
+  })
 
 const addLease = (db: Database.Interface["db"], id: Session.ID, heartbeat: number) =>
   db

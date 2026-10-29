@@ -1,6 +1,6 @@
 export * as SessionExecution from "./execution.js"
 
-import { Cause, Context, Effect, Exit, Layer } from "effect"
+import { Cause, Context, Effect, Exit, Fiber, Layer, Scope } from "effect"
 import { Bus } from "../bus.js"
 import { Database } from "../database/database.js"
 import { Job } from "../job.js"
@@ -8,6 +8,7 @@ import { Instance } from "../instance/service.js"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { SessionEvent } from "./event.js"
 import { SessionRunCoordinator } from "./run-coordinator.js"
+import { SessionRunLease } from "./execution/run-lease.js"
 import { SessionRunner } from "./runner/index.js"
 import { SessionSchema } from "./schema.js"
 import { SessionStore } from "./store.js"
@@ -55,6 +56,7 @@ export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const store = yield* SessionStore.Service
+    const scope = yield* Scope.Scope
     const instances = yield* Instance.Service
     const bus = yield* Bus.Service
     const jobs = yield* Job.Service
@@ -105,51 +107,91 @@ export const layer = Layer.effect(
         Reloaded: (result) => drain(sessionID, result.force, result.continuation, promotable),
       })
     })
-    const coordinator = yield* SessionRunCoordinator.make<SessionSchema.ID, SessionRunner.RunError, InterruptReason>({
+    const leases = new Map<
+      SessionSchema.ID,
+      { leaseID: string; heartbeat: Fiber.Fiber<void>; cancel: Fiber.Fiber<void> }
+    >()
+    let coordinator:
+      | SessionRunCoordinator.Coordinator<SessionSchema.ID, SessionRunner.RunError, InterruptReason>
+      | undefined
+    const activeCoordinator = yield* SessionRunCoordinator.make<
+      SessionSchema.ID,
+      SessionRunner.RunError,
+      InterruptReason
+    >({
       started: (sessionID) =>
-        reportLifecycle(
-          sessionID,
-          bus.publish(SessionEvent.Execution.Started, { sessionID }, claimOnCommit(sessionID)),
-        ),
+        Effect.gen(function* () {
+          const leaseID = yield* SessionRunLease.acquire(db, sessionID).pipe(
+            Effect.catch((error) =>
+              Effect.gen(function* () {
+                yield* Effect.logWarning("Failed to acquire session run lease", { sessionID, cause: error })
+                return undefined as string | undefined
+              }),
+            ),
+          )
+          if (leaseID !== undefined) {
+            const heartbeat = yield* SessionRunLease.heartbeatLoop(db, sessionID, leaseID).pipe(
+              Effect.forkIn(scope),
+            )
+            const cancel = yield* SessionRunLease.cancelPollLoop(db, sessionID, leaseID, () =>
+              coordinator?.interrupt(sessionID, "user") ?? Effect.succeed(false),
+            ).pipe(Effect.forkIn(scope))
+            leases.set(sessionID, { leaseID, heartbeat, cancel })
+          }
+          yield* reportLifecycle(
+            sessionID,
+            bus.publish(SessionEvent.Execution.Started, { sessionID }, claimOnCommit(sessionID)),
+          )
+        }),
       drain: (sessionID, force, promotable) => drain(sessionID, force, undefined, promotable),
       // One terminal observation per busy period, covering every coalesced drain.
       settled: (sessionID, exit, reason) =>
-        reportLifecycle(
-          sessionID,
-          Effect.gen(function* () {
-            const outcome = terminal(exit, reason)
-            if (outcome.type === "succeeded") {
-              yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID }, releaseOnCommit(sessionID))
-              return
-            }
-            if (outcome.type === "interrupted") {
-              // Deliberate stops release the claim; shutdown keeps it for restart continuity.
-              if (outcome.reason !== "shutdown") yield* jobs.cancel(sessionID)
+        Effect.gen(function* () {
+          const lease = leases.get(sessionID)
+          if (lease) {
+            leases.delete(sessionID)
+            yield* Fiber.interrupt(lease.heartbeat)
+            yield* Fiber.interrupt(lease.cancel)
+            yield* SessionRunLease.release(db, sessionID, lease.leaseID)
+          }
+          yield* reportLifecycle(
+            sessionID,
+            Effect.gen(function* () {
+              const outcome = terminal(exit, reason)
+              if (outcome.type === "succeeded") {
+                yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID }, releaseOnCommit(sessionID))
+                return
+              }
+              if (outcome.type === "interrupted") {
+                // Deliberate stops release the claim; shutdown keeps it for restart continuity.
+                if (outcome.reason !== "shutdown") yield* jobs.cancel(sessionID)
+                yield* bus.publish(
+                  SessionEvent.Execution.Interrupted,
+                  { sessionID, reason: outcome.reason },
+                  outcome.reason === "shutdown" ? undefined : releaseOnCommit(sessionID),
+                )
+                return
+              }
               yield* bus.publish(
-                SessionEvent.Execution.Interrupted,
-                { sessionID, reason: outcome.reason },
-                outcome.reason === "shutdown" ? undefined : releaseOnCommit(sessionID),
+                SessionEvent.Execution.Failed,
+                {
+                  sessionID,
+                  error: outcome.error,
+                },
+                releaseOnCommit(sessionID),
               )
-              return
-            }
-            yield* bus.publish(
-              SessionEvent.Execution.Failed,
-              {
-                sessionID,
-                error: outcome.error,
-              },
-              releaseOnCommit(sessionID),
-            )
-          }),
-        ),
+            }),
+          )
+        }),
     })
+    coordinator = activeCoordinator
 
     return Service.of({
-      active: coordinator.active,
-      isActive: coordinator.isActive,
+      active: activeCoordinator.active,
+      isActive: activeCoordinator.isActive,
       interrupt: (sessionID, options) =>
         Effect.gen(function* () {
-          const interrupted = yield* coordinator.interrupt(sessionID, "user")
+          const interrupted = yield* activeCoordinator.interrupt(sessionID, "user")
           if (!options?.resume) return interrupted
           // Resume steering input and between-turn control work from the interrupted
           // intent. Queued next-turn prompts stay parked: a steer-scoped drain never
@@ -162,12 +204,12 @@ export const layer = Layer.effect(
           const next = yield* SessionInbox.nextPromotable(db, sessionID, "input")
           if (next === undefined) return interrupted
           if (next.delivery === "steer" || next.type === "compaction" || next.type === "move")
-            yield* coordinator.wake(sessionID, "steer")
+            yield* activeCoordinator.wake(sessionID, "steer")
           return interrupted
         }),
-      resume: coordinator.run,
-      wake: coordinator.wake,
-      awaitIdle: coordinator.awaitIdle,
+      resume: activeCoordinator.run,
+      wake: activeCoordinator.wake,
+      awaitIdle: activeCoordinator.awaitIdle,
     })
   }),
 )

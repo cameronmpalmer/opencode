@@ -13,6 +13,7 @@ import { SessionMessage } from "./message.js"
 import { Session } from "@opencode/schema/session"
 import { SessionMessageTable, SessionTable } from "./sql.js"
 import { fromRow } from "./info.js"
+import { effectiveFamilyKeySql } from "./family-archive.js"
 
 const ListInputBase = {
   workspaceID: Workspace.ID.pipe(Schema.optional),
@@ -183,7 +184,30 @@ const layer = Layer.effect(
         const rows = yield* (input.limit === undefined ? query.all() : query.limit(input.limit).all()).pipe(
           Effect.orDie,
         )
-        return (direction === "previous" ? rows.toReversed() : rows).map((row) => fromRow(row))
+        let familyCounts: Map<string, number> | undefined
+        let familyKeys: Map<string, string> | undefined
+        if (input.archived && rows.length > 0) {
+          const keys = yield* db
+            .all<{ session_id: string; family_key: string }>(sql`${effectiveFamilyKeySql}`)
+            .pipe(Effect.orDie)
+          const counts = yield* db
+            .all<{ family_key: string; member_count: number }>(sql`
+              SELECT keys.family_key AS family_key, COUNT(*) AS member_count
+              FROM (${effectiveFamilyKeySql}) AS keys
+              JOIN session_v2 ON session_v2.id = keys.session_id
+              WHERE session_v2.time_archived IS NOT NULL
+              GROUP BY keys.family_key
+            `)
+            .pipe(Effect.orDie)
+          familyKeys = new Map(keys.map((item) => [item.session_id, item.family_key]))
+          familyCounts = new Map(counts.map((item) => [item.family_key, Number(item.member_count)]))
+        }
+        return (direction === "previous" ? rows.toReversed() : rows).map((row) => ({
+          ...fromRow(row),
+          ...(familyCounts
+            ? { familyMemberCount: familyCounts.get(familyKeys?.get(row.id) ?? row.id) ?? 0 }
+            : {}),
+        }))
       }),
       messages: Effect.fn("SessionStore.messages")(function* (input) {
         return yield* SessionHistory.decodeMessageRows(db, yield* messageRows(input))

@@ -132,3 +132,11 @@ export class FamilyMemberError extends Schema.TaggedError<FamilyMemberError>()("
   familyRootID: SessionSchema.ID,
   message: Schema.String,
 }) {}
+
+export class SessionLeaseBusyError extends Schema.TaggedError<SessionLeaseBusyError>()(
+  "Session.SessionLeaseBusyError",
+  {
+    sessionID: SessionSchema.ID,
+    message: Schema.String,
+  },
+) {}

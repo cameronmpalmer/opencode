@@ -238,7 +238,13 @@ describe("family archive migration", () => {
         yield* addLegacySession(db, "ses_family")
         expect(yield* V1Migration.run()).toEqual({ status: "completed" })
         yield* db
+          .run(sql`INSERT OR IGNORE INTO session_archive_guard (session_id) VALUES ('ses_family')`)
+          .pipe(Effect.orDie)
+        yield* db
           .run(sql`UPDATE session_v2 SET family_archive_id = 'ses_newer_root' WHERE id = 'ses_family'`)
+          .pipe(Effect.orDie)
+        yield* db
+          .run(sql`DELETE FROM session_archive_guard WHERE session_id = 'ses_family'`)
           .pipe(Effect.orDie)
 
         yield* FamilyArchiveBackfill.run()

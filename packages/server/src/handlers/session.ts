@@ -237,26 +237,29 @@ export const SessionHandler = HttpApiBuilder.group(Api, "server.session", (handl
         "session.update",
         Effect.fn(function* (ctx) {
           const info = yield* requireSession(ctx.params.sessionID)
-          if (ctx.payload.title !== undefined) {
-            if (ctx.payload.title) {
-              yield* session
-                .rename({ sessionID: ctx.params.sessionID, title: ctx.payload.title })
-                .pipe(Effect.catchTag("Session.NotFoundError", missingSession))
-            } else {
-              yield* SessionTitle.Service.use((title) => title.generate(ctx.params.sessionID)).pipe(
-                instances.provide(info),
-                locationErrors,
-              )
+          const archived = info.time.archived !== undefined
+          if (!archived) {
+            if (ctx.payload.title !== undefined) {
+              if (ctx.payload.title) {
+                yield* session
+                  .rename({ sessionID: ctx.params.sessionID, title: ctx.payload.title })
+                  .pipe(Effect.catchTag("Session.NotFoundError", missingSession))
+              } else {
+                yield* SessionTitle.Service.use((title) => title.generate(ctx.params.sessionID)).pipe(
+                  instances.provide(info),
+                  locationErrors,
+                )
+              }
             }
+            if (ctx.payload.metadata !== undefined)
+              yield* session
+                .setMetadata({ sessionID: ctx.params.sessionID, metadata: ctx.payload.metadata })
+                .pipe(Effect.catchTag("Session.NotFoundError", missingSession))
+            if (ctx.payload.permissions !== undefined)
+              yield* session
+                .setPermissions({ sessionID: ctx.params.sessionID, permissions: ctx.payload.permissions })
+                .pipe(Effect.catchTag("Session.NotFoundError", missingSession))
           }
-          if (ctx.payload.metadata !== undefined)
-            yield* session
-              .setMetadata({ sessionID: ctx.params.sessionID, metadata: ctx.payload.metadata })
-              .pipe(Effect.catchTag("Session.NotFoundError", missingSession))
-          if (ctx.payload.permissions !== undefined)
-            yield* session
-              .setPermissions({ sessionID: ctx.params.sessionID, permissions: ctx.payload.permissions })
-              .pipe(Effect.catchTag("Session.NotFoundError", missingSession))
           if (ctx.payload.archived !== undefined) {
             if (ctx.payload.archived) {
               yield* session.archiveSubtree(ctx.params.sessionID).pipe(

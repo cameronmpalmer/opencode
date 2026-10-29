@@ -31,10 +31,23 @@ export function run(): Effect.Effect<void, unknown, Database.Service> {
     if (!FAMILY_COLUMNS.every((column) => columns.has(column))) return
     yield* db.transaction((tx) =>
       Effect.gen(function* () {
-        // Phase 4.3 adds the archive guard trigger on session_v2. This UPDATE
-        // changes archive fields, so that trigger will require a
-        // session_archive_guard row (or an import exemption) for every affected
-        // session. Add the guard insert here when the trigger lands.
+        // The trigger requires a guard for every archive-field write. Collect
+        // the rows this backfill will touch, authorize them, update, then
+        // release only the guards this backfill created.
+        yield* tx.run(sql`CREATE TEMP TABLE IF NOT EXISTS family_archive_backfill_ids (session_id text PRIMARY KEY)`)
+        yield* tx.run(sql`DELETE FROM temp.family_archive_backfill_ids`)
+        yield* tx.run(sql`
+          INSERT OR IGNORE INTO temp.family_archive_backfill_ids (session_id)
+          SELECT session_v2.id
+          FROM session_v2
+          JOIN session ON session.id = session_v2.id
+          WHERE (session_v2.family_archive_id IS NULL AND session.family_archive_id IS NOT NULL)
+             OR (session_v2.archive_cause IS NULL AND session.archive_cause IS NOT NULL)
+        `)
+        yield* tx.run(sql`
+          INSERT OR IGNORE INTO session_archive_guard (session_id)
+          SELECT session_id FROM temp.family_archive_backfill_ids
+        `)
         yield* tx.run(sql`
           UPDATE session_v2
           SET
@@ -54,6 +67,11 @@ export function run(): Effect.Effect<void, unknown, Database.Service> {
                 AND (SELECT session.archive_cause FROM session WHERE session.id = session_v2.id) IS NOT NULL)
             )
         `)
+        yield* tx.run(sql`
+          DELETE FROM session_archive_guard
+          WHERE session_id IN (SELECT session_id FROM temp.family_archive_backfill_ids)
+        `)
+        yield* tx.run(sql`DROP TABLE temp.family_archive_backfill_ids`)
         // The V1 branch recorded a snapshot per archived root. A database that
         // already has them keeps its original applied_at.
         yield* tx.run(sql`

@@ -671,6 +671,10 @@ export function run(
                   .onConflictDoNothing()
                   .run()
               yield* tx.run(sql`
+                INSERT OR IGNORE INTO session_import_exempt (session_id, expires_at)
+                VALUES (${nextID.id}, ${Date.now() + 60_000})
+              `)
+              yield* tx.run(sql`
                   INSERT OR IGNORE INTO session_v2 (
                     id, project_id, workspace_id, parent_id, slug, directory, path, title, version, share_url,
                     summary_additions, summary_deletions, summary_files, summary_diffs, metadata, cost,
@@ -729,6 +733,7 @@ export function run(
                   set: { seq: transformed.watermark, owner_id: null },
                 })
                 .run()
+              yield* tx.run(sql`DELETE FROM session_import_exempt WHERE session_id = ${nextID.id}`)
             }),
           )
           .pipe(Effect.orDie)
@@ -881,6 +886,11 @@ function importNextDatabase(
                 .where(eq(SessionTable.id, SessionSchema.ID.make(session.id)))
                 .get()
               if (existing) return
+              // Import is the one writer allowed past the archive triggers.
+              yield* tx.run(sql`
+                INSERT OR IGNORE INTO session_import_exempt (session_id, expires_at)
+                VALUES (${session.id}, ${Date.now() + 60_000})
+              `)
               yield* tx.run(sql`
                 INSERT INTO session_v2 (
                   id, project_id, workspace_id, parent_id, fork_session_id, fork_boundary, slug, directory,
@@ -922,6 +932,7 @@ function importNextDatabase(
                   set: { seq: messages.at(-1)?.seq ?? -1, owner_id: null },
                 })
                 .run()
+              yield* tx.run(sql`DELETE FROM session_import_exempt WHERE session_id = ${session.id}`)
             }),
           )
           .pipe(Effect.orDie)

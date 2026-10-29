@@ -9,7 +9,7 @@ import { Session } from "@opencode/core/session"
 import { SessionEvent } from "@opencode/core/session/event"
 import { SessionExecution } from "@opencode/core/session/execution"
 import { SessionProjector } from "@opencode/core/session/projector"
-import { SessionTable } from "@opencode/core/session/sql"
+import { SessionArchiveGuardTable, SessionTable } from "@opencode/core/session/sql"
 import { SessionStore } from "@opencode/core/session/store"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Effect } from "effect"
@@ -37,6 +37,13 @@ describe("family archive session events", () => {
       const { db } = yield* Database.Service
       const created = yield* session.create({ location })
 
+      yield* db
+        .insert(SessionArchiveGuardTable)
+        .values({ session_id: created.id })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie)
+
       yield* bus.publish(SessionEvent.Archived, {
         sessionID: created.id,
         familyArchiveID: created.id,
@@ -60,6 +67,12 @@ describe("family archive session events", () => {
       expect(archived.archiveCause).toBe("user")
       expect(archived.archiveState).toBeUndefined()
       expect(archived.archiveStateAt).toBeUndefined()
+
+      yield* db
+        .delete(SessionArchiveGuardTable)
+        .where(eq(SessionArchiveGuardTable.session_id, created.id))
+        .run()
+        .pipe(Effect.orDie)
     }),
   )
 
@@ -69,6 +82,13 @@ describe("family archive session events", () => {
       const bus = yield* Bus.Service
       const { db } = yield* Database.Service
       const created = yield* session.create({ location })
+
+      yield* db
+        .insert(SessionArchiveGuardTable)
+        .values({ session_id: created.id })
+        .onConflictDoNothing()
+        .run()
+        .pipe(Effect.orDie)
 
       yield* bus.publish(SessionEvent.Archived, {
         sessionID: created.id,
@@ -103,6 +123,12 @@ describe("family archive session events", () => {
       expect(restored.archiveCause).toBeUndefined()
       expect(restored.archiveState).toBeUndefined()
       expect(restored.archiveStateAt).toBeUndefined()
+
+      yield* db
+        .delete(SessionArchiveGuardTable)
+        .where(eq(SessionArchiveGuardTable.session_id, created.id))
+        .run()
+        .pipe(Effect.orDie)
     }),
   )
 })
