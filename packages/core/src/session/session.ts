@@ -1,6 +1,7 @@
 export * as Session from "./session.js"
 
 import { DateTime, Effect, Fiber, Scope } from "effect"
+import { eq } from "drizzle-orm"
 import type { Agent } from "@opencode/schema/agent"
 import type { Model } from "@opencode/schema/model"
 import type { Permission } from "@opencode/schema/permission"
@@ -14,6 +15,7 @@ import type { Skill } from "../skill.js"
 import {
   BusyError,
   CompactionConflictError,
+  FamilyMemberError,
   InboxConflictError,
   NotFoundError,
   PromptConflictError,
@@ -21,6 +23,7 @@ import {
 } from "./error.js"
 import { SessionEvent } from "./event.js"
 import { SessionExecution } from "./execution.js"
+import { isDirectFamilyMember, liveLeases, loadSubtree, orderSubtree } from "./family-archive.js"
 import { SessionInbox } from "./inbox.js"
 import { SessionMessage } from "./message.js"
 import { SessionPrompt } from "./prompt.js"
@@ -29,6 +32,7 @@ import { SessionShell } from "./shell.js"
 import { SessionSkill } from "./skill.js"
 import { SessionSchema } from "./schema.js"
 import { SessionStore } from "./store.js"
+import { SessionTable } from "./sql.js"
 
 type PromptRequest = SessionPrompt.Input & {
   id?: SessionMessage.ID
@@ -81,6 +85,36 @@ export const make = Effect.fn("Session.make")(function* () {
     const session = yield* get(sessionID)
     if (!session.time.archived) return
     yield* bus.publish(SessionEvent.Unarchived, { sessionID })
+  })
+  const archivePreview = Effect.fn("Session.archivePreview")(function* (sessionID: SessionSchema.ID) {
+    const root = yield* database.db
+      .select()
+      .from(SessionTable)
+      .where(eq(SessionTable.id, sessionID))
+      .get()
+      .pipe(Effect.orDie)
+    if (!root) return yield* new NotFoundError({ sessionID })
+    if (isDirectFamilyMember(root)) {
+      return yield* new FamilyMemberError({
+        sessionID: root.id,
+        familyRootID: root.family_archive_id!,
+        message: `Session ${root.id} belongs to family ${root.family_archive_id}; preview the family root instead`,
+      })
+    }
+    const rows = orderSubtree(yield* loadSubtree(database.db, root.id))
+    const ids = rows.map((row) => row.id)
+    const leases = yield* liveLeases(database.db, ids)
+    const active = new Set<SessionSchema.ID>(leases.map((lease) => lease.session_id))
+    for (const id of ids) {
+      if (yield* execution.isActive(id)) active.add(id)
+    }
+    const activeIDs = [...active].filter((id) => ids.includes(id)).sort()
+    return {
+      root_id: root.id,
+      descendant_count: Math.max(rows.length - 1, 0),
+      active_count: activeIDs.length,
+      active_session_ids: activeIDs,
+    }
   })
   const setMetadata = Effect.fn("Session.setMetadata")(function* (
     sessionID: SessionSchema.ID,
@@ -363,6 +397,7 @@ export const make = Effect.fn("Session.make")(function* () {
     rename,
     archive,
     unarchive,
+    archivePreview,
     setMetadata,
     setPermissions,
     switchAgent,
@@ -389,6 +424,7 @@ export const make = Effect.fn("Session.make")(function* () {
     const rename = operations.rename.bind(undefined, sessionID)
     const archive = operations.archive.bind(undefined, sessionID)
     const unarchive = operations.unarchive.bind(undefined, sessionID)
+    const archivePreview = operations.archivePreview.bind(undefined, sessionID)
     const setMetadata = operations.setMetadata.bind(undefined, sessionID)
     const setPermissions = operations.setPermissions.bind(undefined, sessionID)
     const switchAgent = operations.switchAgent.bind(undefined, sessionID)
@@ -418,6 +454,7 @@ export const make = Effect.fn("Session.make")(function* () {
       rename,
       archive,
       unarchive,
+      archivePreview,
       setMetadata,
       setPermissions,
       switchAgent,

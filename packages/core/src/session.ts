@@ -31,6 +31,7 @@ import {
   AttachmentError,
   BusyError,
   CompactionConflictError,
+  FamilyMemberError,
   ForkEmptyError,
   InboxConflictError,
   InvalidListCursorError,
@@ -44,6 +45,7 @@ import {
 import { Node } from "@opencode/util/effect/app-node"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { SessionEvent } from "./session/event.js"
+import type { ArchivePreview } from "./session/family-archive.js"
 import { SessionInbox } from "./session/inbox.js"
 import { InstructionState } from "./session/instruction-state.js"
 import { SessionGenerate } from "./session/generate.js"
@@ -106,6 +108,7 @@ export {
   AttachmentError,
   BusyError,
   CompactionConflictError,
+  FamilyMemberError,
   ForkEmptyError,
   InboxConflictError,
   InvalidListCursorError,
@@ -198,6 +201,9 @@ export interface Interface {
   readonly rename: (input: { sessionID: SessionSchema.ID; title: string }) => Effect.Effect<void, NotFoundError>
   readonly archive: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   readonly unarchive: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
+  readonly archivePreview: (
+    sessionID: SessionSchema.ID,
+  ) => Effect.Effect<ArchivePreview, NotFoundError | FamilyMemberError>
   readonly setMetadata: (input: {
     sessionID: SessionSchema.ID
     metadata: SessionSchema.Metadata
@@ -504,6 +510,7 @@ const layer = Layer.effect(
       rename: (input) => sessions.forSession(input.sessionID).rename(input),
       archive: (sessionID) => sessions.forSession(sessionID).archive(),
       unarchive: (sessionID) => sessions.forSession(sessionID).unarchive(),
+      archivePreview: (sessionID) => sessions.forSession(sessionID).archivePreview(),
       setMetadata: (input) => sessions.forSession(input.sessionID).setMetadata(input),
       setPermissions: (input) => sessions.forSession(input.sessionID).setPermissions(input),
       move: moves.move,
