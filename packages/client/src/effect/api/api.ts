@@ -567,6 +567,7 @@ export type SessionLogOutput =
             | undefined
           readonly data: {
             readonly sessionID: Session.ID
+            readonly timeArchived?: number | null | undefined
             readonly familyArchiveID?: Session.ID | null | undefined
             readonly archiveCause?: "user" | "cascade" | "migration" | null | undefined
             readonly archiveState?: "archiving" | null | undefined

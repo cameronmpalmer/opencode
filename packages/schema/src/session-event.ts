@@ -135,6 +135,7 @@ export const Archived = Event.durable({
   ...options,
   schema: {
     ...Base,
+    timeArchived: Schema.NullOr(Schema.Finite).pipe(optional),
     familyArchiveID: Schema.NullOr(SessionID).pipe(optional),
     archiveCause: Schema.NullOr(Schema.Literals(["user", "cascade", "migration"])).pipe(optional),
     archiveState: Schema.NullOr(Schema.Literal("archiving")).pipe(optional),

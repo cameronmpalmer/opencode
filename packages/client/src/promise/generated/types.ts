@@ -1117,6 +1117,7 @@ export type SessionArchived = {
   location?: LocationRef
   data: {
     sessionID: SessionID
+    timeArchived?: number | null
     familyArchiveID?: SessionID | null
     archiveCause?: "user" | "cascade" | "migration" | null
     archiveState?: "archiving" | null

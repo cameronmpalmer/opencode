@@ -28,12 +28,15 @@ import { SessionRunner } from "./session/runner/index.js"
 import { SessionStore } from "./session/store.js"
 import { SessionExecution } from "./session/execution.js"
 import {
+  ArchiveBlockedError,
+  ArchiveInProgressError,
   AttachmentError,
   BusyError,
   CompactionConflictError,
   FamilyMemberError,
   ForkEmptyError,
   InboxConflictError,
+  InvalidArchiveTimeError,
   InvalidListCursorError,
   MessageDecodeError,
   MessageNotFoundError,
@@ -45,7 +48,7 @@ import {
 import { Node } from "@opencode/util/effect/app-node"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { SessionEvent } from "./session/event.js"
-import type { ArchivePreview } from "./session/family-archive.js"
+import type { ArchivePreview, ArchiveResult, UnarchiveResult } from "./session/family-archive.js"
 import { SessionInbox } from "./session/inbox.js"
 import { InstructionState } from "./session/instruction-state.js"
 import { SessionGenerate } from "./session/generate.js"
@@ -105,12 +108,15 @@ type ForkInput = {
 }
 
 export {
+  ArchiveBlockedError,
+  ArchiveInProgressError,
   AttachmentError,
   BusyError,
   CompactionConflictError,
   FamilyMemberError,
   ForkEmptyError,
   InboxConflictError,
+  InvalidArchiveTimeError,
   InvalidListCursorError,
   MessageDecodeError,
   MessageNotFoundError,
@@ -204,6 +210,20 @@ export interface Interface {
   readonly archivePreview: (
     sessionID: SessionSchema.ID,
   ) => Effect.Effect<ArchivePreview, NotFoundError | FamilyMemberError>
+  readonly setArchived: (
+    sessionID: SessionSchema.ID,
+    time?: number,
+  ) => Effect.Effect<void, NotFoundError | FamilyMemberError>
+  readonly archiveSubtree: (
+    sessionID: SessionSchema.ID,
+    options?: { archivedAt?: number; waitTimeoutMs?: number },
+  ) => Effect.Effect<
+    ArchiveResult,
+    NotFoundError | FamilyMemberError | ArchiveInProgressError | ArchiveBlockedError | InvalidArchiveTimeError
+  >
+  readonly unarchiveSubtree: (
+    sessionID: SessionSchema.ID,
+  ) => Effect.Effect<UnarchiveResult, NotFoundError | FamilyMemberError | ArchiveInProgressError>
   readonly setMetadata: (input: {
     sessionID: SessionSchema.ID
     metadata: SessionSchema.Metadata
@@ -511,6 +531,9 @@ const layer = Layer.effect(
       archive: (sessionID) => sessions.forSession(sessionID).archive(),
       unarchive: (sessionID) => sessions.forSession(sessionID).unarchive(),
       archivePreview: (sessionID) => sessions.forSession(sessionID).archivePreview(),
+      setArchived: (sessionID, time) => sessions.forSession(sessionID).setArchived(time),
+      archiveSubtree: (sessionID, options) => sessions.forSession(sessionID).archiveSubtree(options),
+      unarchiveSubtree: (sessionID) => sessions.forSession(sessionID).unarchiveSubtree(),
       setMetadata: (input) => sessions.forSession(input.sessionID).setMetadata(input),
       setPermissions: (input) => sessions.forSession(input.sessionID).setPermissions(input),
       move: moves.move,

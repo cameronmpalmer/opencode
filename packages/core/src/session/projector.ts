@@ -651,7 +651,7 @@ const layer = Layer.effectDiscard(
       db
         .update(SessionTable)
         .set({
-          time_archived: event.created,
+          time_archived: event.data.timeArchived ?? event.created,
           time_updated: event.created,
           ...(event.data.familyArchiveID !== undefined ? { family_archive_id: event.data.familyArchiveID } : {}),
           ...(event.data.archiveCause !== undefined ? { archive_cause: event.data.archiveCause } : {}),

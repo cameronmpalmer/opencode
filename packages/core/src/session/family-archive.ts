@@ -19,6 +19,22 @@ export const ArchivePreview = Schema.Struct({
 })
 export type ArchivePreview = typeof ArchivePreview.Type
 
+export const ArchiveResult = Schema.Struct({
+  root_id: SessionSchema.ID,
+  archived_ids: Schema.Array(SessionSchema.ID),
+  already_archived_ids: Schema.Array(SessionSchema.ID),
+  cancelled_ids: Schema.Array(SessionSchema.ID),
+  archive_time: Schema.Finite,
+})
+export type ArchiveResult = typeof ArchiveResult.Type
+
+export const UnarchiveResult = Schema.Struct({
+  root_id: SessionSchema.ID,
+  restored_ids: Schema.Array(SessionSchema.ID),
+  still_archived_ids: Schema.Array(SessionSchema.ID),
+})
+export type UnarchiveResult = typeof UnarchiveResult.Type
+
 /**
  * The SQL definition of the effective family key (design 6.1), shared by every
  * query that groups or gates sessions by family. Do not re-derive this rule in
